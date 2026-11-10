@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Monthly Check-in</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <!-- Landing / setup -->
+  <main id="setup" class="setup">
+    <div class="setup-card">
+      <h1>Monthly Check-in</h1>
+      <p class="sub">A ~15 minute conversation about how your month went. Same structure every month, so we can see how things change.</p>
+      <form id="setup-form">
+        <label>Participant ID
+          <input id="pid" required maxlength="40" placeholder="e.g. P-1042" autocomplete="off">
+        </label>
+        <label>Typical monthly income (USD, after tax)
+          <input id="income" type="number" min="0" step="50" required placeholder="e.g. 4000">
+          <span class="hint">Used only to scale dollar amounts in the choice tasks to your situation.</span>
+        </label>
+        <p id="history-note" class="hint"></p>
+        <label class="check"><input type="checkbox" id="consent" required>
+          <span>I understand this is a research check-in, my answers are stored on this device, and I can stop at any time.</span></label>
+        <button class="primary" type="submit">Begin check-in</button>
+      </form>
+    </div>
+  </main>
+
+  <!-- Interview -->
+  <div id="app" class="app" hidden>
+    <header class="top">
+      <div class="top-row">
+        <h1>Monthly Check-in</h1>
+        <span id="badge" class="badge"></span>
+      </div>
+      <div id="progress" class="progress"></div>
+    </header>
+    <section id="msgs" class="msgs" aria-live="polite"></section>
+    <footer id="dock" class="dock"></footer>
+  </div>
+
+  <script type="module" src="app.js"></script>
+</body>
+</html>

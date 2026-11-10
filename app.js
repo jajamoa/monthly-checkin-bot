@@ -1,0 +1,502 @@
+import {
+  VERSION, DOMAINS, parseEvents, tagDomain, CORE_SCALES, scoreScale, MODULES, pickModules,
+  SHOCKS, EXPENSES, WINDFALL_CATS, TIME_CATS, CONTEXTUAL_TASK, SUPPORT, CRISIS_RX,
+} from "./content.js";
+
+const FAST = new URLSearchParams(location.search).has("fast");
+const $ = (s) => document.querySelector(s);
+const sleep = (ms) => new Promise((r) => setTimeout(r, FAST ? 0 : ms));
+const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+const fmt$ = (n) => "$" + Math.round(n).toLocaleString("en-US");
+
+function h(tag, props = {}, ...kids) {
+  const el = document.createElement(tag);
+  for (const [k, v] of Object.entries(props)) {
+    if (v == null || v === false) continue;
+    if (k === "class") el.className = v;
+    else if (k === "html") el.innerHTML = v;
+    else if (k.startsWith("on")) el.addEventListener(k.slice(2), v);
+    else el.setAttribute(k, v);
+  }
+  for (const c of kids.flat()) if (c != null) el.append(c.nodeType ? c : document.createTextNode(c));
+  return el;
+}
+
+// seeded RNG so jitter is stable per participant-month
+function rng(seedStr) {
+  let a = 0;
+  for (const c of seedStr) a = (Math.imul(a ^ c.charCodeAt(0), 2654435761) + 0x9e3779b9) | 0;
+  return () => {
+    a = (a + 0x6d2b79f5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+const nice = (x) => {
+  const step = x < 100 ? 5 : x < 1000 ? 10 : x < 5000 ? 50 : 100;
+  return Math.max(step, Math.round(x / step) * step);
+};
+
+// ---------------- history (localStorage) ----------------
+const histKey = (pid) => `mci:history:${pid}`;
+const loadHistory = (pid) => { try { return JSON.parse(localStorage.getItem(histKey(pid)) || "[]"); } catch { return []; } };
+const saveRecord = (rec) => {
+  try {
+    const hist = loadHistory(rec.participant_id);
+    hist.push(rec);
+    localStorage.setItem(histKey(rec.participant_id), JSON.stringify(hist));
+  } catch { /* storage may be unavailable */ }
+};
+
+// ---------------- chat UI primitives ----------------
+const msgs = () => $("#msgs");
+const scrollDown = () => { msgs().scrollTop = msgs().scrollHeight; };
+
+async function bot(content, { html = false, tag = null, stem = null, cls = "" } = {}) {
+  const typing = h("div", { class: "row bot" }, h("div", { class: "bubble typing" }, h("i"), h("i"), h("i")));
+  msgs().append(typing); scrollDown();
+  const plain = html ? content.replace(/<[^>]+>/g, "") : content;
+  await sleep(Math.min(1000, 250 + plain.length * 5));
+  typing.remove();
+  const b = h("div", { class: "bubble " + cls + (html ? " html" : "") });
+  if (tag) b.append(h("span", { class: "tag" }, tag));
+  if (stem) b.append(h("span", { class: "stem" }, stem));
+  if (html) b.insertAdjacentHTML("beforeend", content); else b.append(document.createTextNode(content));
+  msgs().append(h("div", { class: "row bot" }, b));
+  scrollDown();
+  return b;
+}
+function user(text) {
+  msgs().append(h("div", { class: "row user" }, h("div", { class: "bubble" }, text)));
+  scrollDown();
+}
+function dock(...nodes) { const d = $("#dock"); d.replaceChildren(h("div", { class: "dock-inner" }, ...nodes)); setTimeout(scrollDown, 30); }
+function clearDock() { $("#dock").replaceChildren(); }
+
+// ---------------- answer widgets ----------------
+function askText({ placeholder = "Type your answer…", chips = [], min = 1 } = {}) {
+  return new Promise((res) => {
+    const ta = h("textarea", { rows: 2, placeholder });
+    const send = h("button", { class: "send", disabled: true }, "Send");
+    const done = (v, label) => { clearDock(); user(label ?? v); res(v); };
+    const go = () => { const v = ta.value.trim(); if (v.length >= min) done(v); };
+    ta.addEventListener("input", () => { send.disabled = ta.value.trim().length < min; ta.style.height = "auto"; ta.style.height = ta.scrollHeight + "px"; });
+    ta.addEventListener("keydown", (e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); go(); } });
+    send.addEventListener("click", go);
+    dock(ta, h("div", { class: "dock-actions" },
+      h("div", { class: "chips" }, chips.map((c) => h("button", { class: "chip", type: "button", onclick: () => done(c.value, c.label) }, c.label))),
+      send));
+    ta.focus();
+  });
+}
+
+function askChoice(options, { cls = "col", anchors = null } = {}) {
+  return new Promise((res) => {
+    const wrap = h("div", { class: "opts " + cls },
+      options.map((o) => h("button", { class: "opt", type: "button", onclick: () => { clearDock(); user(o.label); res(o.value); } }, o.label)));
+    dock(wrap, anchors && h("div", { class: "anchors" }, h("span", {}, anchors[0]), h("span", {}, anchors[1])));
+  });
+}
+
+function askMulti(options, { exact = null, min = 0, label = "Done" } = {}) {
+  return new Promise((res) => {
+    const sel = new Set();
+    const btn = h("button", { class: "send" }, label);
+    const sync = () => { btn.disabled = exact ? sel.size !== exact : sel.size < min; };
+    const wrap = h("div", { class: "opts" }, options.map((o) => {
+      const b = h("button", { class: "opt", type: "button", style: "flex:0 0 auto" }, o.label);
+      b.addEventListener("click", () => {
+        if (sel.has(o.value)) { sel.delete(o.value); b.classList.remove("sel"); }
+        else if (!exact || sel.size < exact) { sel.add(o.value); b.classList.add("sel"); }
+        sync();
+      });
+      return b;
+    }));
+    btn.addEventListener("click", () => {
+      const vals = options.filter((o) => sel.has(o.value));
+      clearDock(); user(vals.length ? vals.map((o) => o.label).join(", ") : "Nothing else"); res(vals.map((o) => o.value));
+    });
+    sync();
+    dock(wrap, h("div", { class: "dock-actions" }, h("span", { class: "hint", style: "margin:0" }, exact ? `Pick ${exact}` : ""), btn));
+  });
+}
+
+function askNumber({ prefix = "", suffix = "", placeholder = "", min = 0, max = 100000 } = {}) {
+  return new Promise((res) => {
+    const input = h("input", { type: "number", min, max, step: "any", placeholder, inputmode: "decimal" });
+    const send = h("button", { class: "send", disabled: true }, "Send");
+    const go = () => { const v = parseFloat(input.value); if (!isNaN(v) && v >= min && v <= max) { clearDock(); user(`${prefix}${v}${suffix}`); res(v); } };
+    input.addEventListener("input", () => { const v = parseFloat(input.value); send.disabled = isNaN(v) || v < min || v > max; });
+    input.addEventListener("keydown", (e) => e.key === "Enter" && go());
+    send.addEventListener("click", go);
+    dock(h("div", { class: "num-row" }, prefix && h("span", { class: "affix" }, prefix), input, suffix && h("span", { class: "affix" }, suffix), send));
+    input.focus();
+  });
+}
+
+function askSlider({ min = 0, max = 100, step = 1, init = 50, unit = "%" } = {}) {
+  return new Promise((res) => {
+    let touched = false;
+    const out = h("div", { class: "slider-big" }, "—");
+    const r = h("input", { type: "range", min, max, step, value: init });
+    const send = h("button", { class: "send", disabled: true }, "Confirm");
+    const upd = () => { touched = true; out.textContent = r.value + unit; send.disabled = false; };
+    r.addEventListener("input", upd); r.addEventListener("click", upd);
+    send.addEventListener("click", () => { clearDock(); user(r.value + unit); res(Number(r.value)); });
+    dock(out, r, h("div", { class: "anchors" }, h("span", {}, min + unit), h("span", {}, max + unit)),
+      h("div", { class: "dock-actions", style: "justify-content:flex-end" }, send));
+  });
+}
+
+function askAlloc({ labels, total, step, unit, show }) {
+  return new Promise((res) => {
+    const vals = Object.fromEntries(labels.map((l) => [l, 0]));
+    const sum = () => Object.values(vals).reduce((a, b) => a + b, 0);
+    const foot = h("span", {});
+    const btn = h("button", { class: "send", disabled: true }, "Confirm");
+    const outs = {};
+    const refresh = () => {
+      for (const l of labels) outs[l].textContent = show(vals[l]);
+      const rem = +(total - sum()).toFixed(2);
+      foot.textContent = rem === 0 ? "All allocated ✓" : `Left to allocate: ${unit === "%" ? rem + "%" : rem + " h"}`;
+      btn.disabled = rem !== 0;
+    };
+    const rows = labels.map((l) => {
+      const r = h("input", { type: "range", min: 0, max: total, step, value: 0 });
+      outs[l] = h("output", {});
+      r.addEventListener("input", () => {
+        const others = sum() - vals[l];
+        vals[l] = Math.min(Number(r.value), +(total - others).toFixed(2));
+        r.value = vals[l]; refresh();
+      });
+      return h("div", { class: "alloc-row" }, h("span", {}, l), r, outs[l]);
+    });
+    btn.addEventListener("click", () => {
+      clearDock(); user(labels.map((l) => `${l} ${show(vals[l])}`).join(" · ")); res({ ...vals });
+    });
+    refresh();
+    dock(...rows, h("div", { class: "alloc-foot" }, foot, btn));
+  });
+}
+
+// ---------------- progress ----------------
+const BLOCKS = ["Recap", "A · Core", "B · Adaptive", "C · Choices", "D · What-ifs", "Close"];
+function buildProgress() {
+  $("#progress").replaceChildren(...BLOCKS.map((b) => h("div", { class: "seg" }, h("div", { class: "bar" }, h("i")), h("span", {}, b))));
+}
+function prog(block, frac = 0) {
+  [...$("#progress").children].forEach((seg, i) => {
+    seg.classList.toggle("on", i === block);
+    seg.querySelector("i").style.width = (i < block ? 100 : i === block ? Math.round(frac * 100) : 0) + "%";
+  });
+}
+
+// ---------------- scale runner ----------------
+async function runScale(scale, store, blockIdx, baseFrac, spanFrac, { skip = () => false } = {}) {
+  const items = scale.items.filter((it) => !skip(it));
+  let n = 0;
+  for (const it of items) {
+    const options = it.options || scale.options;
+    const isLadder = options.length > 6;
+    const b = await bot(it.text, {
+      tag: items.length > 1 ? `${scale.name} · ${++n} of ${items.length}` : scale.name,
+      stem: scale.stem || null,
+    });
+    store[it.id] = await askChoice(options.map((o) => ({ label: o.label, value: o.value })),
+      { cls: isLadder ? "ladder" : options.length > 5 ? "col" : "scale", anchors: scale.anchors });
+    prog(blockIdx, baseFrac + spanFrac * (n / items.length));
+  }
+}
+
+// ---------------- recap ----------------
+async function recap(st) {
+  prog(0, 0);
+  await bot(`Hi, thanks for taking the time. This is check-in #${st.month}. It takes about 15 minutes, and I'll ask the same core questions each month so we can see how things shift.`);
+  await bot("Let's start with your last month. What's changed in your life since we last talked — big or small?", { tag: "Recap" });
+  const text = await askText({ placeholder: "A few sentences is plenty…", chips: [{ label: "Nothing much changed", value: "nothing" }] });
+  st.recap_text = text;
+  const events = parseEvents(text).map((t) => ({ text: t, domain: tagDomain(t), source: "free_recall" }));
+  prog(0, 0.4);
+
+  const covered = new Set(events.map((e) => e.domain));
+  await bot("Quick check — did anything happen in these areas that we haven't talked about?", { tag: "Checklist" });
+  const keys = Object.keys(DOMAINS).filter((k) => !covered.has(k));
+  const picked = await askMulti(keys.map((k) => ({ label: DOMAINS[k], value: k })), { label: "Continue" });
+  for (const k of picked) {
+    await bot(`What happened with ${DOMAINS[k].toLowerCase()}? One line is fine.`);
+    const t = await askText({ placeholder: "Briefly…" });
+    events.push({ text: t, domain: k, source: "checklist" });
+  }
+  prog(0, 0.75);
+
+  st.events = events.slice(0, 6);
+  for (const e of st.events) {
+    await bot(`“${e.text}”\nIs this a concrete change from how things were before (e.g., new job, a move), rather than business as usual?`, { tag: `${DOMAINS[e.domain]} · event` });
+    e.factual = await askChoice([{ label: "Yes, something actually changed", value: true }, { label: "No, more of the same", value: false }], { cls: "scale" });
+  }
+  prog(0, 1);
+  if (st.events.length) {
+    await bot(`Got it. Here's what I noted:<ul>${st.events.map((e) => `<li>${esc(e.text)} <em>(${esc(DOMAINS[e.domain])}${e.factual ? ", changed" : ""})</em></li>`).join("")}</ul>`, { html: true });
+  } else {
+    await bot("Got it — a steady month. That's useful to know too.");
+  }
+}
+
+// ---------------- Block A ----------------
+async function blockA(st) {
+  prog(1, 0);
+  await bot("Next, a set of short standard questions. They're the same every month, so please answer based on how things have been recently.", { tag: "Block A · Core scales" });
+  st.scales = {};
+  for (let i = 0; i < CORE_SCALES.length; i++) {
+    const sc = CORE_SCALES[i];
+    const a = {};
+    await runScale(sc, a, 1, i / CORE_SCALES.length, 1 / CORE_SCALES.length);
+    st.scales[sc.id] = { answers: a, score: scoreScale(sc, a) };
+  }
+  prog(1, 1);
+}
+
+// ---------------- Block B ----------------
+async function blockB(st) {
+  prog(2, 0);
+  const mods = pickModules(st.events, st.month);
+  st.adaptive = {};
+  await bot(mods[0].why
+    ? "Thanks. Based on what you told me, a couple of follow-up sets of questions — these are short."
+    : "A short extra set of questions for this month.", { tag: "Block B · Adaptive" });
+  for (let i = 0; i < mods.length; i++) {
+    const m = MODULES[mods[i].id];
+    let ongoing = true;
+    if (mods[i].id === "relationship") {
+      await bot("Is the relationship you mentioned currently ongoing?");
+      ongoing = await askChoice([{ label: "Yes", value: true }, { label: "No", value: false }], { cls: "scale" });
+    }
+    const a = {};
+    await runScale(m, a, 2, i / mods.length, 1 / mods.length, { skip: (it) => it.onlyIfOngoing && !ongoing });
+    st.adaptive[mods[i].id] = { triggered_by: mods[i].why, answers: a };
+  }
+  prog(2, 1);
+}
+
+// ---------------- Block C tasks ----------------
+// Each task takes an effective monthly income, optional framing prefix, and returns a result object.
+const T = {
+  async timePref(st, inc, pre, tag) {
+    const N = nice(inc * 0.12 * st.jit.timePref);
+    let lo = N, hi = N * 2; const steps = [];
+    for (let i = 0; i < 3; i++) {
+      const X = nice((lo + hi) / 2);
+      await bot(i === 0 ? `${pre}Would you rather have ${fmt$(N)} today or ${fmt$(X)} in 30 days?` : `${pre}Same choice, with a different later amount: ${fmt$(N)} today, or ${fmt$(X)} in 30 days?`, { tag: `${tag} · ${i + 1} of 3` });
+      const c = await askChoice([{ label: `${fmt$(N)} today`, value: "now" }, { label: `${fmt$(X)} in 30 days`, value: "later" }], { cls: "scale" });
+      steps.push({ now: N, later: X, choice: c });
+      if (c === "later") hi = X; else lo = X;
+    }
+    const x = (lo + hi) / 2;
+    return { now: N, indifference_later: x, implied_monthly_rate: +(x / N - 1).toFixed(3), steps, value: x };
+  },
+  async risk(st, inc, pre, tag) {
+    const S = nice(inc * 0.09 * st.jit.risk);
+    let lo = S, hi = S * 4; const steps = [];
+    for (let i = 0; i < 3; i++) {
+      const X = nice((lo + hi) / 2);
+      await bot(i === 0 ? `${pre}${fmt$(S)} for sure, or a 50/50 chance at ${fmt$(X)} or $0?` : `${pre}Same choice, new prize: ${fmt$(S)} for sure, or a 50/50 chance at ${fmt$(X)} or $0?`, { tag: `${tag} · ${i + 1} of 3` });
+      const c = await askChoice([{ label: `${fmt$(S)} for sure`, value: "sure" }, { label: `50/50: ${fmt$(X)} or $0`, value: "gamble" }], { cls: "scale" });
+      steps.push({ sure: S, prize: X, choice: c });
+      if (c === "gamble") hi = X; else lo = X;
+    }
+    const x = (lo + hi) / 2;
+    return { sure: S, indifference_prize: x, certainty_equivalent_ratio: +(x / 2 / S).toFixed(3), steps, value: x };
+  },
+  async windfall(st, inc, pre, tag) {
+    const W = nice(inc * 0.15 * st.jit.windfall);
+    await bot(`${pre}You unexpectedly get ${fmt$(W)}. Split it across these uses:`, { tag });
+    const a = await askAlloc({ labels: WINDFALL_CATS, total: 100, step: 5, unit: "%", show: (v) => `${v}% (${fmt$(W * v / 100)})` });
+    return { amount: W, split_pct: a, value: a };
+  },
+  async timeAlloc(st, inc, pre, tag) {
+    await bot(`${pre}You get 6 extra free hours next week. Split them across:`, { tag });
+    const a = await askAlloc({ labels: TIME_CATS, total: 6, step: 0.5, unit: "h", show: (v) => `${v} h` });
+    return { hours: 6, split_hours: a, value: a };
+  },
+  async resWage(st, inc, pre, tag) {
+    await bot(`${pre}Someone offers you 3 hours of extra work this weekend. What's the lowest hourly rate you'd accept?`, { tag });
+    const v = await askNumber({ prefix: "$", suffix: "/hour", placeholder: "e.g. 35", min: 0, max: 2000 });
+    return { hourly_rate: v, value: v };
+  },
+  async social(st, inc, pre, tag) {
+    await bot(`${pre}A friend you're not very close to invites you to dinner on Friday on short notice. What's the chance you'd go?`, { tag });
+    const v = await askSlider({ min: 0, max: 100, step: 5, init: 50, unit: "%" });
+    return { probability_pct: v, value: v };
+  },
+};
+const TASK_NAME = { timePref: "Time preference", risk: "Risk", windfall: "Windfall split", timeAlloc: "Time allocation", resWage: "Reservation wage", social: "Social approach" };
+const C_ORDER = ["timePref", "risk", "windfall", "timeAlloc", "resWage", "social"];
+
+function perceivedDiff(a, b) {
+  if (typeof a === "number" && typeof b === "number") return +(b - a).toFixed(3);
+  if (a && b && typeof a === "object") {
+    return +(Object.keys(a).reduce((s, k) => s + Math.abs((b[k] ?? 0) - a[k]), 0) / 2).toFixed(2); // L1/2 shift
+  }
+  return null;
+}
+
+async function blockC(st) {
+  prog(3, 0);
+  await bot("Now some choices — there are no right answers, just go with what you'd really do. Amounts are scaled to your situation.", { tag: "Block C · Choices" });
+  st.tasks = {};
+  for (let i = 0; i < C_ORDER.length; i++) {
+    const k = C_ORDER[i];
+    st.tasks[k] = await T[k](st, st.income, "", TASK_NAME[k]);
+    prog(3, (i + 1) / C_ORDER.length);
+  }
+}
+
+// ---------------- Block D ----------------
+async function blockD(st) {
+  prog(4, 0);
+  st.hypothetical = []; st.contextual = [];
+  const factual = st.events.filter((e) => e.factual);
+  const phase = (st.month - 1) % 3;
+  const pool = SHOCKS.filter((s) => s.phase === phase);
+  const n = factual.length ? 2 : 3;
+  const total = n + (factual.length ? 2 : 0);
+  let done = 0;
+  await bot("Now a few “what if” scenarios. Imagine each one as vividly as you can and tell me what you'd do.", { tag: "Block D · What-ifs" });
+
+  for (const s of pool.slice(0, n)) {
+    const slots = { amt20: fmt$(nice(st.income * 0.2)), bill: nice(st.income * 0.25).toLocaleString("en-US") };
+    await bot(s.text(slots), { tag: "Scenario" });
+    const rec = { shock_id: s.id, phase };
+    if (s.cut3) {
+      await bot("Which three expenses would you cut first?");
+      rec.cut_first = await askMulti(EXPENSES.map((x) => ({ label: x, value: x })), { exact: 3 });
+    }
+    await bot("Keeping that scenario in mind:", {});
+    const res = await T[s.rerun](st, st.income * (s.incomeFactor || 1), "Under that scenario: ", `${TASK_NAME[s.rerun]} (re-run)`);
+    rec.task = s.rerun; rec.result = res;
+    rec.shift_vs_baseline = perceivedDiff(st.tasks[s.rerun].value, res.value);
+    st.hypothetical.push(rec);
+    prog(4, ++done / total);
+  }
+
+  if (factual.length) {
+    const main = factual[0];
+    const other = st.events.find((e) => e !== main);
+    await bot(`Now a couple of questions about something you mentioned: “${main.text}”`, { tag: "Contextual" });
+    await bot(other
+      ? `Suppose that had not happened. Would you still have this one: “${other.text}”?`
+      : "Suppose that had not happened. Would the rest of your month have gone about the same?");
+    const yn = await askChoice([{ label: "Yes", value: "yes" }, { label: "No", value: "no" }, { label: "Unsure", value: "unsure" }], { cls: "scale" });
+    await bot("In one line, why?");
+    const why = await askText({ placeholder: "One line…" });
+    st.contextual.push({ type: "counterfactual_judgment", event: main.text, other_event: other?.text ?? null, answer: yn, reason: why });
+    prog(4, ++done / total);
+
+    const k = CONTEXTUAL_TASK[main.domain] || "resWage";
+    const res = await T[k](st, st.income, "Suppose that had not happened. ", `${TASK_NAME[k]} (counterfactual)`);
+    st.contextual.push({
+      type: "counterfactual_task", event: main.text, task: k, result: res,
+      perceived_effect: perceivedDiff(res.value, st.tasks[k].value), // actual − counterfactual; perceived, not causal
+    });
+    prog(4, ++done / total);
+  }
+  prog(4, 1);
+}
+
+// ---------------- Close ----------------
+async function close(st) {
+  prog(5, 0);
+  await bot("Almost done. Is there anything important from this month that we didn't cover?", { tag: "Close" });
+  const last = await askText({ placeholder: "Anything at all…", chips: [{ label: "Nothing more", value: "" }] });
+  st.closing_note = last;
+
+  const phq = st.scales.phq4.score;
+  const elevated = phq.total >= 6 || phq.anx >= 3 || phq.dep >= 3;
+  const crisis = CRISIS_RX.test(last) || CRISIS_RX.test(st.recap_text || "");
+  st.flags = { phq4_elevated: elevated, crisis_language: crisis };
+  if (elevated || crisis) {
+    await bot(crisis
+      ? "I'm really sorry things feel this heavy. Your safety matters more than this survey."
+      : "Thank you for sharing honestly. Some of your answers suggest this month has been hard.", {});
+    await bot(SUPPORT, { html: true, cls: "support" });
+    st.flags.escalation = "Flagged for study-team follow-up per escalation protocol (demo: not transmitted anywhere).";
+  }
+  prog(5, 1);
+}
+
+// ---------------- finish & summary ----------------
+function incentive(st) {
+  const r = rng(`${st.pid}:${st.month}:incentive`);
+  const picked = r() < 0.1;
+  if (!picked) return { selected: false };
+  const pool = [["timePref", st.tasks.timePref], ["risk", st.tasks.risk]];
+  const [task, res] = pool[Math.floor(r() * pool.length)];
+  const step = res.steps[Math.floor(r() * res.steps.length)];
+  return { selected: true, task, step };
+}
+
+async function finish(st) {
+  st.completed_at = new Date().toISOString();
+  st.incentive = incentive(st);
+  const hist = loadHistory(st.pid);
+  const prev = hist[hist.length - 1];
+  saveRecord(st);
+
+  const rows = [
+    ["Stress (PSS-4, 0–16)", (r) => r.scales.pss4.score.total, true],
+    ["Mood & anxiety (PHQ-4, 0–12)", (r) => r.scales.phq4.score.total, true],
+    ["Loneliness (UCLA-3, 3–9)", (r) => r.scales.ucla3.score.total, true],
+    ["Life ladder (0–10)", (r) => r.scales.cantril.score.total, false],
+    ["Financial well-being (0–20)", (r) => r.scales.fwb5.score.total, false],
+    ["Sleep quality (1–5)", (r) => r.scales.sleep.answers.sl1, false],
+  ].map(([label, f, higherIsWorse]) => {
+    const v = f(st); let d = "";
+    if (prev) {
+      const diff = v - f(prev);
+      if (diff !== 0) d = ` <span class="delta ${(diff > 0) === higherIsWorse ? "up" : "down"}">${diff > 0 ? "+" : ""}${diff}</span>`;
+      else d = ` <span class="delta">±0</span>`;
+    }
+    return `<tr><td>${label}</td><td><strong>${v}</strong>${d}</td></tr>`;
+  }).join("");
+
+  await bot("That's everything — thank you. Your check-in is saved on this device.", {});
+  const b = await bot(`<strong>This month at a glance</strong>${prev ? `<br><span class="hint">Change since check-in #${prev.month}</span>` : ""}<table>${rows}</table>
+    ${st.incentive.selected ? `<p>🎲 One of your money choices was randomly selected for a small real payout in the full study (demo only: ${esc(st.incentive.task)}).</p>` : ""}
+    <div class="dl"><button id="dl-json">Download my data (JSON)</button><button id="restart">Start over</button></div>`, { html: true });
+  b.querySelector("#dl-json").onclick = () => {
+    const url = URL.createObjectURL(new Blob([JSON.stringify(st, null, 2)], { type: "application/json" }));
+    h("a", { href: url, download: `checkin_${st.pid}_m${st.month}.json` }).click();
+    URL.revokeObjectURL(url);
+  };
+  b.querySelector("#restart").onclick = () => location.reload();
+  window.__lastRecord = st;
+}
+
+// ---------------- boot ----------------
+async function start(pid, income) {
+  const hist = loadHistory(pid);
+  const month = hist.length + 1;
+  const r = rng(`${pid}:${month}`);
+  const jit = () => 0.9 + 0.2 * r(); // ±10% per month
+  const st = {
+    bot_version: VERSION, participant_id: pid, pid, month, income,
+    started_at: new Date().toISOString(),
+    jit: { timePref: jit(), risk: jit(), windfall: jit(), timeAlloc: jit(), resWage: jit(), social: jit() },
+  };
+  $("#setup").hidden = true; $("#app").hidden = false;
+  $("#badge").textContent = `${pid} · check-in #${month}`;
+  buildProgress(); prog(0, 0);
+  try {
+    await recap(st); await blockA(st); await blockB(st); await blockC(st); await blockD(st); await close(st); await finish(st);
+  } catch (e) { console.error(e); await bot("Something went wrong on our side. Your earlier answers are not lost on this page; please reload to restart."); }
+}
+
+$("#pid").addEventListener("input", () => {
+  const n = loadHistory($("#pid").value.trim()).length;
+  $("#history-note").textContent = n ? `Welcome back — this will be check-in #${n + 1}.` : "";
+});
+$("#setup-form").addEventListener("submit", (e) => {
+  e.preventDefault();
+  start($("#pid").value.trim(), Number($("#income").value));
+});
