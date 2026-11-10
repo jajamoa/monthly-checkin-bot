@@ -2,26 +2,13 @@ import {
   VERSION, DOMAINS, parseEvents, tagDomain, CORE_SCALES, scoreScale, MODULES, pickModules,
   SHOCKS, EXPENSES, WINDFALL_CATS, TIME_CATS, CONTEXTUAL_TASK, SUPPORT, CRISIS_RX,
 } from "./content.js";
+import {
+  $, h, esc, sleep, bot, user, askText, askChoice, askMulti, askNumber, askSlider, askAlloc,
+  buildProgress, prog, initScene, mountSetupLumi, waveHello, lastSpoken,
+} from "./ui.js";
+import * as UI from "./ui.js";
 
-const FAST = new URLSearchParams(location.search).has("fast");
-const $ = (s) => document.querySelector(s);
-const sleep = (ms) => new Promise((r) => setTimeout(r, FAST ? 0 : ms));
-const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 const fmt$ = (n) => "$" + Math.round(n).toLocaleString("en-US");
-
-function h(tag, props = {}, ...kids) {
-  const el = document.createElement(tag);
-  for (const [k, v] of Object.entries(props)) {
-    if (v == null || v === false) continue;
-    if (k === "class") el.className = v;
-    else if (k === "html") el.innerHTML = v;
-    else if (k.startsWith("on")) el.addEventListener(k.slice(2), v);
-    else el.setAttribute(k, v);
-  }
-  for (const c of kids.flat()) if (c != null) el.append(c.nodeType ? c : document.createTextNode(c));
-  return el;
-}
-
 // seeded RNG so jitter is stable per participant-month
 function rng(seedStr) {
   let a = 0;
@@ -49,148 +36,6 @@ const saveRecord = (rec) => {
   } catch { /* storage may be unavailable */ }
 };
 
-// ---------------- chat UI primitives ----------------
-const msgs = () => $("#msgs");
-const scrollDown = () => { msgs().scrollTop = msgs().scrollHeight; };
-
-async function bot(content, { html = false, tag = null, stem = null, cls = "" } = {}) {
-  const typing = h("div", { class: "row bot" }, h("div", { class: "bubble typing" }, h("i"), h("i"), h("i")));
-  msgs().append(typing); scrollDown();
-  const plain = html ? content.replace(/<[^>]+>/g, "") : content;
-  await sleep(Math.min(1000, 250 + plain.length * 5));
-  typing.remove();
-  const b = h("div", { class: "bubble " + cls + (html ? " html" : "") });
-  if (tag) b.append(h("span", { class: "tag" }, tag));
-  if (stem) b.append(h("span", { class: "stem" }, stem));
-  if (html) b.insertAdjacentHTML("beforeend", content); else b.append(document.createTextNode(content));
-  msgs().append(h("div", { class: "row bot" }, b));
-  scrollDown();
-  return b;
-}
-function user(text) {
-  msgs().append(h("div", { class: "row user" }, h("div", { class: "bubble" }, text)));
-  scrollDown();
-}
-function dock(...nodes) { const d = $("#dock"); d.replaceChildren(h("div", { class: "dock-inner" }, ...nodes)); setTimeout(scrollDown, 30); }
-function clearDock() { $("#dock").replaceChildren(); }
-
-// ---------------- answer widgets ----------------
-function askText({ placeholder = "Type your answer…", chips = [], min = 1 } = {}) {
-  return new Promise((res) => {
-    const ta = h("textarea", { rows: 2, placeholder });
-    const send = h("button", { class: "send", disabled: true }, "Send");
-    const done = (v, label) => { clearDock(); user(label ?? v); res(v); };
-    const go = () => { const v = ta.value.trim(); if (v.length >= min) done(v); };
-    ta.addEventListener("input", () => { send.disabled = ta.value.trim().length < min; ta.style.height = "auto"; ta.style.height = ta.scrollHeight + "px"; });
-    ta.addEventListener("keydown", (e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); go(); } });
-    send.addEventListener("click", go);
-    dock(ta, h("div", { class: "dock-actions" },
-      h("div", { class: "chips" }, chips.map((c) => h("button", { class: "chip", type: "button", onclick: () => done(c.value, c.label) }, c.label))),
-      send));
-    ta.focus();
-  });
-}
-
-function askChoice(options, { cls = "col", anchors = null } = {}) {
-  return new Promise((res) => {
-    const wrap = h("div", { class: "opts " + cls },
-      options.map((o) => h("button", { class: "opt", type: "button", onclick: () => { clearDock(); user(o.label); res(o.value); } }, o.label)));
-    dock(wrap, anchors && h("div", { class: "anchors" }, h("span", {}, anchors[0]), h("span", {}, anchors[1])));
-  });
-}
-
-function askMulti(options, { exact = null, min = 0, label = "Done" } = {}) {
-  return new Promise((res) => {
-    const sel = new Set();
-    const btn = h("button", { class: "send" }, label);
-    const sync = () => { btn.disabled = exact ? sel.size !== exact : sel.size < min; };
-    const wrap = h("div", { class: "opts" }, options.map((o) => {
-      const b = h("button", { class: "opt", type: "button", style: "flex:0 0 auto" }, o.label);
-      b.addEventListener("click", () => {
-        if (sel.has(o.value)) { sel.delete(o.value); b.classList.remove("sel"); }
-        else if (!exact || sel.size < exact) { sel.add(o.value); b.classList.add("sel"); }
-        sync();
-      });
-      return b;
-    }));
-    btn.addEventListener("click", () => {
-      const vals = options.filter((o) => sel.has(o.value));
-      clearDock(); user(vals.length ? vals.map((o) => o.label).join(", ") : "Nothing else"); res(vals.map((o) => o.value));
-    });
-    sync();
-    dock(wrap, h("div", { class: "dock-actions" }, h("span", { class: "hint", style: "margin:0" }, exact ? `Pick ${exact}` : ""), btn));
-  });
-}
-
-function askNumber({ prefix = "", suffix = "", placeholder = "", min = 0, max = 100000 } = {}) {
-  return new Promise((res) => {
-    const input = h("input", { type: "number", min, max, step: "any", placeholder, inputmode: "decimal" });
-    const send = h("button", { class: "send", disabled: true }, "Send");
-    const go = () => { const v = parseFloat(input.value); if (!isNaN(v) && v >= min && v <= max) { clearDock(); user(`${prefix}${v}${suffix}`); res(v); } };
-    input.addEventListener("input", () => { const v = parseFloat(input.value); send.disabled = isNaN(v) || v < min || v > max; });
-    input.addEventListener("keydown", (e) => e.key === "Enter" && go());
-    send.addEventListener("click", go);
-    dock(h("div", { class: "num-row" }, prefix && h("span", { class: "affix" }, prefix), input, suffix && h("span", { class: "affix" }, suffix), send));
-    input.focus();
-  });
-}
-
-function askSlider({ min = 0, max = 100, step = 1, init = 50, unit = "%" } = {}) {
-  return new Promise((res) => {
-    let touched = false;
-    const out = h("div", { class: "slider-big" }, "—");
-    const r = h("input", { type: "range", min, max, step, value: init });
-    const send = h("button", { class: "send", disabled: true }, "Confirm");
-    const upd = () => { touched = true; out.textContent = r.value + unit; send.disabled = false; };
-    r.addEventListener("input", upd); r.addEventListener("click", upd);
-    send.addEventListener("click", () => { clearDock(); user(r.value + unit); res(Number(r.value)); });
-    dock(out, r, h("div", { class: "anchors" }, h("span", {}, min + unit), h("span", {}, max + unit)),
-      h("div", { class: "dock-actions", style: "justify-content:flex-end" }, send));
-  });
-}
-
-function askAlloc({ labels, total, step, unit, show }) {
-  return new Promise((res) => {
-    const vals = Object.fromEntries(labels.map((l) => [l, 0]));
-    const sum = () => Object.values(vals).reduce((a, b) => a + b, 0);
-    const foot = h("span", {});
-    const btn = h("button", { class: "send", disabled: true }, "Confirm");
-    const outs = {};
-    const refresh = () => {
-      for (const l of labels) outs[l].textContent = show(vals[l]);
-      const rem = +(total - sum()).toFixed(2);
-      foot.textContent = rem === 0 ? "All allocated ✓" : `Left to allocate: ${unit === "%" ? rem + "%" : rem + " h"}`;
-      btn.disabled = rem !== 0;
-    };
-    const rows = labels.map((l) => {
-      const r = h("input", { type: "range", min: 0, max: total, step, value: 0 });
-      outs[l] = h("output", {});
-      r.addEventListener("input", () => {
-        const others = sum() - vals[l];
-        vals[l] = Math.min(Number(r.value), +(total - others).toFixed(2));
-        r.value = vals[l]; refresh();
-      });
-      return h("div", { class: "alloc-row" }, h("span", {}, l), r, outs[l]);
-    });
-    btn.addEventListener("click", () => {
-      clearDock(); user(labels.map((l) => `${l} ${show(vals[l])}`).join(" · ")); res({ ...vals });
-    });
-    refresh();
-    dock(...rows, h("div", { class: "alloc-foot" }, foot, btn));
-  });
-}
-
-// ---------------- progress ----------------
-const BLOCKS = ["Recap", "A · Core", "B · Adaptive", "C · Choices", "D · What-ifs", "Close"];
-function buildProgress() {
-  $("#progress").replaceChildren(...BLOCKS.map((b) => h("div", { class: "seg" }, h("div", { class: "bar" }, h("i")), h("span", {}, b))));
-}
-function prog(block, frac = 0) {
-  [...$("#progress").children].forEach((seg, i) => {
-    seg.classList.toggle("on", i === block);
-    seg.querySelector("i").style.width = (i < block ? 100 : i === block ? Math.round(frac * 100) : 0) + "%";
-  });
-}
 
 // ---------------- scale runner ----------------
 async function runScale(scale, store, blockIdx, baseFrac, spanFrac, { skip = () => false } = {}) {
@@ -205,6 +50,7 @@ async function runScale(scale, store, blockIdx, baseFrac, spanFrac, { skip = () 
     });
     store[it.id] = await askChoice(options.map((o) => ({ label: o.label, value: o.value })),
       { cls: isLadder ? "ladder" : options.length > 5 ? "col" : "scale", anchors: scale.anchors });
+    if (UI.lastSpoken) store[it.id + "__said"] = UI.lastSpoken; // raw spoken answer, kept alongside the mapped value
     prog(blockIdx, baseFrac + spanFrac * (n / items.length));
   }
 }
@@ -212,7 +58,7 @@ async function runScale(scale, store, blockIdx, baseFrac, spanFrac, { skip = () 
 // ---------------- recap ----------------
 async function recap(st) {
   prog(0, 0);
-  await bot(`Hi, thanks for taking the time. This is check-in #${st.month}. It takes about 15 minutes, and I'll ask the same core questions each month so we can see how things shift.`);
+  await bot(`Hi, thanks for taking the time. This is check-in #${st.month}. It takes about 15 minutes, and I'll ask the same core questions each month so we can see how things shift. Everything here is voice-first: when you see the mic light up, just talk to me in your own words.`);
   await bot("Let's start with your last month. What's changed in your life since we last talked — big or small?", { tag: "Recap" });
   const text = await askText({ placeholder: "A few sentences is plenty…", chips: [{ label: "Nothing much changed", value: "nothing" }] });
   st.recap_text = text;
@@ -243,6 +89,13 @@ async function recap(st) {
   }
 }
 
+// Open-ended spoken probe (stored verbatim, to be coded later)
+async function openEnded(st, key, prompt) {
+  await bot(prompt, { tag: "In your own words" });
+  const text = await askText({ placeholder: "Your words appear here…", chips: [{ label: "Nothing to add", value: "" }] });
+  (st.open_ended ||= []).push({ key, prompt, text });
+}
+
 // ---------------- Block A ----------------
 async function blockA(st) {
   prog(1, 0);
@@ -255,6 +108,7 @@ async function blockA(st) {
     st.scales[sc.id] = { answers: a, score: scoreScale(sc, a) };
   }
   prog(1, 1);
+  await openEnded(st, "after_core_scales", "Thanks! Before we move on: in your own words, what has been behind how you've been feeling this past month?");
 }
 
 // ---------------- Block B ----------------
@@ -301,7 +155,7 @@ const T = {
     for (let i = 0; i < 3; i++) {
       const X = nice((lo + hi) / 2);
       await bot(i === 0 ? `${pre}${fmt$(S)} for sure, or a 50/50 chance at ${fmt$(X)} or $0?` : `${pre}Same choice, new prize: ${fmt$(S)} for sure, or a 50/50 chance at ${fmt$(X)} or $0?`, { tag: `${tag} · ${i + 1} of 3` });
-      const c = await askChoice([{ label: `${fmt$(S)} for sure`, value: "sure" }, { label: `50/50: ${fmt$(X)} or $0`, value: "gamble" }], { cls: "scale" });
+      const c = await askChoice([{ label: `Take the sure ${fmt$(S)}`, value: "sure" }, { label: `Gamble: 50/50 for ${fmt$(X)} or $0`, value: "gamble" }], { cls: "scale" });
       steps.push({ sure: S, prize: X, choice: c });
       if (c === "gamble") hi = X; else lo = X;
     }
@@ -350,6 +204,7 @@ async function blockC(st) {
     st.tasks[k] = await T[k](st, st.income, "", TASK_NAME[k]);
     prog(3, (i + 1) / C_ORDER.length);
   }
+  await openEnded(st, "after_choices", "Those were tricky! In your own words, how did you decide on those choices? Was there any reasoning that stood out?");
 }
 
 // ---------------- Block D ----------------
@@ -486,7 +341,7 @@ async function start(pid, income) {
   };
   $("#setup").hidden = true; $("#app").hidden = false;
   $("#badge").textContent = `${pid} · check-in #${month}`;
-  buildProgress(); prog(0, 0);
+  initScene(); waveHello(); buildProgress(); prog(0, 0);
   try {
     await recap(st); await blockA(st); await blockB(st); await blockC(st); await blockD(st); await close(st); await finish(st);
   } catch (e) { console.error(e); await bot("Something went wrong on our side. Your earlier answers are not lost on this page; please reload to restart."); }
@@ -500,3 +355,5 @@ $("#setup-form").addEventListener("submit", (e) => {
   e.preventDefault();
   start($("#pid").value.trim(), Number($("#income").value));
 });
+
+mountSetupLumi();

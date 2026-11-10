@@ -1,6 +1,13 @@
 # Monthly Check-in Interview Bot
 
-A ~15 minute chat-style interview that tracks month-to-month changes in psychological state and behavioral tendencies. UI follows [trace-your-thinking](https://github.com/jajamoa/trace-your-thinking) (warm paper background, white bot bubbles, dark user bubbles, sticky progress header, answer dock at the bottom).
+A ~15 minute chat-style interview that tracks month-to-month changes in psychological state and behavioral tendencies. The UI is an Animal-Crossing-style scene: a character (Lumi) talking through a name-tagged dialog box with typewriter text and blip sounds, a stitched answer panel, and a leaf-green progress bar. Click Lumi to make it hop; click the dialog to skip typing; "Log" shows the whole conversation.
+
+## Voice-first input
+
+Every question is answered by speaking (Web Speech API: Chrome, Edge, Safari). Multiple-choice items are also answered in your own words ("pretty often", "the later one", "seven"). The spoken phrase is mapped to the closest option, the raw phrase is kept next to the mapped value (`<item>__said`), and if the match is unclear the bot asks again. Numbers, sliders, percentage/hour splits and "pick three" lists are parsed from speech too. Two short open-ended spoken probes (after Block A and after Block C) are stored verbatim in `open_ended`. Tapping and typing remain as fallbacks (mic blocked, unsupported browser, accessibility).
+
+Privacy: browser speech recognition may send audio to the browser vendor. For a study, swap `voiceBar` in `ui.js` for a self-hosted Whisper endpoint. For tests, `window.__say("text")` injects a spoken answer.
+
 
 No build step, no backend: open `index.html` through any static server.
 

@@ -5,42 +5,92 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Monthly Check-in</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=Fredoka:wght@400;500;600&family=Nunito:wght@400;600;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="styles.css">
 </head>
 <body>
+  <div class="sky" aria-hidden="true">
+    <i class="cloud c1"></i><i class="cloud c2"></i><i class="cloud c3"></i>
+    <div class="hill h1"></div><div class="hill h2"></div>
+  </div>
+
+  <template id="lumi-svg">
+    <svg class="lumi" viewBox="0 0 200 220" aria-hidden="true">
+      <ellipse class="shadow" cx="100" cy="208" rx="62" ry="9"/>
+      <g class="body">
+        <path class="leaf" d="M100 22 C 84 4, 62 6, 56 16 C 70 28, 90 32, 100 24 C 110 32, 130 28, 144 16 C 138 6, 116 4, 100 22 Z"/>
+        <path class="leaf-vein" d="M100 24 L100 40"/>
+        <ellipse class="torso" cx="100" cy="122" rx="78" ry="82"/>
+        <ellipse class="belly" cx="100" cy="146" rx="50" ry="52"/>
+        <g class="eyes">
+          <ellipse class="eye-w" cx="72" cy="98" rx="22" ry="25"/><ellipse class="eye-w" cx="128" cy="98" rx="22" ry="25"/>
+          <circle class="pupil" cx="76" cy="100" r="11"/><circle class="pupil" cx="124" cy="100" r="11"/>
+          <circle class="glint" cx="80" cy="95" r="4"/><circle class="glint" cx="128" cy="95" r="4"/>
+        </g>
+        <path class="beak" d="M90 120 L110 120 L100 136 Z"/>
+        <ellipse class="blush" cx="50" cy="126" rx="10" ry="6"/><ellipse class="blush" cx="150" cy="126" rx="10" ry="6"/>
+        <path class="wing l" d="M26 120 C 8 140, 18 168, 38 168 C 40 150, 38 134, 26 120 Z"/>
+        <path class="wing r" d="M174 120 C 192 140, 182 168, 162 168 C 160 150, 162 134, 174 120 Z"/>
+      </g>
+    </svg>
+  </template>
+
   <!-- Landing / setup -->
   <main id="setup" class="setup">
-    <div class="setup-card">
-      <h1>Monthly Check-in</h1>
-      <p class="sub">A ~15 minute conversation about how your month went. Same structure every month, so we can see how things change.</p>
+    <div class="passport">
+      <div class="ribbon">Monthly Check-in</div>
+      <div id="setup-lumi" class="setup-lumi"></div>
+      <p class="sub">Hi, I'm <b>Lumi</b>! Let's chat for about 15 minutes about how your month went. Same questions every month, so we can see how things grow.</p>
       <form id="setup-form">
         <label>Participant ID
           <input id="pid" required maxlength="40" placeholder="e.g. P-1042" autocomplete="off">
         </label>
         <label>Typical monthly income (USD, after tax)
           <input id="income" type="number" min="0" step="50" required placeholder="e.g. 4000">
-          <span class="hint">Used only to scale dollar amounts in the choice tasks to your situation.</span>
+          <span class="hint">Only used to scale the dollar amounts in the choice tasks.</span>
         </label>
         <p id="history-note" class="hint"></p>
         <label class="check"><input type="checkbox" id="consent" required>
-          <span>I understand this is a research check-in, my answers are stored on this device, and I can stop at any time.</span></label>
-        <button class="primary" type="submit">Begin check-in</button>
+          <span>I understand this is a research check-in, I'll answer by voice (my browser's speech recognition may send audio to the browser vendor), my answers are stored on this device, and I can stop at any time.</span></label>
+        <button class="primary" type="submit">Let's go!</button>
       </form>
     </div>
   </main>
 
-  <!-- Interview -->
+  <!-- Interview scene -->
   <div id="app" class="app" hidden>
     <header class="top">
       <div class="top-row">
-        <h1>Monthly Check-in</h1>
         <span id="badge" class="badge"></span>
+        <div class="tools">
+          <button id="btn-sound" class="tool" title="Sound on/off" aria-label="Toggle sound">🔊</button>
+          <button id="btn-log" class="tool" title="Conversation log" aria-label="Open log">💬 Log</button>
+        </div>
       </div>
       <div id="progress" class="progress"></div>
     </header>
-    <section id="msgs" class="msgs" aria-live="polite"></section>
-    <footer id="dock" class="dock"></footer>
+
+    <section class="stage" id="stage">
+      <div id="lumi" class="lumi-wrap" title="Poke me!"></div>
+      <div id="you" class="you" hidden></div>
+    </section>
+
+    <div id="dock" class="dock"></div>
+
+    <section id="dialog" class="dialog" role="log" aria-live="polite">
+      <div class="nametag">Lumi</div>
+      <div id="dlg-body" class="dlg-body">
+        <span id="dlg-tag" class="tag" hidden></span>
+        <span id="dlg-stem" class="stem" hidden></span>
+        <div id="dlg-text" class="dlg-text"></div>
+      </div>
+      <span id="dlg-next" class="next" hidden>▼</span>
+    </section>
+
+    <aside id="log" class="log" hidden>
+      <div class="log-head"><b>Conversation log</b><button id="log-close" class="tool">✕</button></div>
+      <div id="log-list" class="log-list"></div>
+    </aside>
   </div>
 
   <script type="module" src="app.js"></script>
