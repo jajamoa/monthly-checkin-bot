@@ -99,37 +99,7 @@ export function matchOption(txt, options) {
   return null;
 }
 
-/** Multi-select: which options were mentioned? Empty array for "nothing / none". */
-export function matchMulti(txt, options) {
-  const have = new Set(tokensOf(txt).map(stem));
-  const hit = options.filter((o) => tokensOf(o.label).filter((w) => !STOP.has(w)).some((w) => have.has(stem(w))));
-  return hit;
-}
-export const saidNothing = (txt) => /\b(nothing|none|nope|nah|no|neither|nothing else)\b/i.test(txt);
-
-const ALLOC_KW = {
-  Save: ["save", "saving", "savings"], Essentials: ["essentials", "essential", "bills", "necessities", "needs"],
-  Treats: ["treats", "treat", "fun", "myself"], "Give to others": ["give", "giving", "others", "donate", "gift", "charity"],
-  Invest: ["invest", "investing", "investment"], Rest: ["rest", "sleep", "relax", "relaxing"],
-  Socializing: ["socializing", "social", "friends", "socialize"], "Work / study": ["work", "study", "working", "studying"],
-  Exercise: ["exercise", "workout", "gym", "exercising"], Entertainment: ["entertainment", "games", "movies", "tv", "fun"],
-};
-/** "save forty, essentials thirty, treats ten…" → {Save:40, ...}. Each number goes to the nearest category word. */
-export function parseAlloc(txt, labels) {
-  const toks = txt.toLowerCase().replace(/(\d),(\d{3})/g, "$1$2").match(/\d+(?:\.\d+)?|[a-z']+/g) || [];
-  const kws = [];
-  toks.forEach((w, i) => labels.forEach((l) => { if ((ALLOC_KW[l] || [l.toLowerCase()]).includes(w)) kws.push({ l, i }); }));
-  const res = {};
-  for (const n of extractNumbers(txt)) {
-    let best = null;
-    for (const k of kws) {
-      const d = Math.abs(k.i - n.idx) + (k.i > n.idx ? 0.5 : 0); // slight preference for "category, number"
-      if (!best || d < best.d) best = { l: k.l, d };
-    }
-    if (best && best.d <= 4 && res[best.l] == null) res[best.l] = n.value;
-  }
-  return res;
-}
+// (multi-select and allocation voice parsing removed: those widgets are tap-only now)
 
 // =====================================================================
 // Scene: character, dialog, log, sound
@@ -302,11 +272,11 @@ function voiceBar({ hint = "", continuous = false, silenceMs = 1300, onHeard }) 
   return api;
 }
 
-function dock(bar, ...nodes) {
+function dock(bar, ...nodes) { // bar may be null for tap-only widgets
   currentBar?.destroy();
-  currentBar = bar;
+  currentBar = bar || null;
   pendingAck = false;
-  $("#dock").replaceChildren(h("div", { class: "dock-inner" }, bar.el, ...nodes));
+  $("#dock").replaceChildren(h("div", { class: "dock-inner" }, ...(bar ? [bar.el] : []), ...nodes));
 }
 export function clearDock() { currentBar?.destroy(); currentBar = null; $("#dock").replaceChildren(); }
 
@@ -338,20 +308,9 @@ export function askText({ placeholder = "Your answer will appear here…", chips
 
 export function askChoice(options, { cls = "col", anchors = null } = {}) {
   return new Promise((res) => {
-    let bar;
-    const pick = (o, said) => { lastSpoken = said || ""; clearDock(); user(said && said.toLowerCase() !== o.label.toLowerCase() ? `${o.label}  (“${said}”)` : o.label); res(o.value); };
-    const wrap = h("div", { class: "opts " + cls }, options.map((o) => h("button", { class: "opt", type: "button", onclick: () => pick(o, "") }, o.label)));
-    bar = voiceBar({
-      hint: `You can say it your own way, like “${options[Math.min(1, options.length - 1)].label}”.`,
-      silenceMs: 1100,
-      onHeard: (txt, b) => {
-        const m = matchOption(txt, options);
-        if (!m) return b.retry(`I heard “${txt}”, but I'm not sure which option that is. Say it again, or tap one.`);
-        [...wrap.children].forEach((c, i) => c.classList.toggle("sel", options[i] === m));
-        setTimeout(() => pick(m, txt), FAST ? 0 : 450);
-      },
-    });
-    dock(bar, wrap, anchors && h("div", { class: "anchors" }, h("span", {}, anchors[0]), h("span", {}, anchors[1])));
+    const pick = (o) => { lastSpoken = ""; clearDock(); user(o.label); res(o.value); };
+    const wrap = h("div", { class: "opts " + cls }, options.map((o) => h("button", { class: "opt", type: "button", onclick: () => pick(o) }, o.label)));
+    dock(null, wrap, anchors && h("div", { class: "anchors" }, h("span", {}, anchors[0]), h("span", {}, anchors[1])));
   });
 }
 
@@ -375,21 +334,8 @@ export function askMulti(options, { exact = null, min = 0, label = "Done" } = {}
       clearDock(); user(vals.length ? vals.map((o) => o.label).join(", ") : "Nothing else"); res(vals.map((o) => o.value));
     };
     btn.addEventListener("click", finish);
-    const bar = voiceBar({
-      hint: exact ? `Say ${exact} of these, like “${options[0].label}, ${options[2].label} and ${options[4].label}”.` : "Say any that apply, or “nothing else”.",
-      continuous: true, silenceMs: 1800,
-      onHeard: (txt, b) => {
-        const hit = matchMulti(txt, options);
-        if (!hit.length && saidNothing(txt) && !exact) return b.confirmIn(1500, "Nothing else", finish);
-        if (!hit.length) return b.retry(`I heard “${txt}”. Which of these did you mean?`);
-        options.forEach((o, i) => toggle(o, buttons[i], hit.includes(o)));
-        if (exact && sel.size < exact) return b.retry(`I got ${sel.size}. Please name ${exact} in total.`);
-        if (exact && hit.length > exact) { return b.retry(`That's ${hit.length}. Pick exactly ${exact}.`); }
-        b.confirmIn(2200, "Locking in…", finish);
-      },
-    });
     sync();
-    dock(bar, h("div", { class: "opts" }, buttons), h("div", { class: "dock-actions" }, h("span", { class: "hint" }, exact ? `Pick ${exact}` : ""), btn));
+    dock(null, h("div", { class: "opts" }, buttons), h("div", { class: "dock-actions" }, h("span", { class: "hint" }, exact ? `Pick ${exact}` : "Tap any that apply"), btn));
   });
 }
 
@@ -451,23 +397,10 @@ export function askAlloc({ labels, total, step, unit, show }) {
       btn.disabled = rem !== 0;
     };
     const finish = () => { clearDock(); user(labels.map((l) => `${l} ${show(vals[l])}`).join(" · ")); res({ ...vals }); };
-    const eg = unit === "%" ? `“${labels[0]} forty, ${labels[1]} thirty, ${labels[2]} twenty, ${labels[3]} ten”` : `“${labels[0]} two, ${labels[1]} one and a half, ${labels[2]} two, ${labels[3]} half an hour”`;
-    const bar = voiceBar({
-      hint: `Say your split, like ${eg}.`, continuous: true, silenceMs: 2400,
-      onHeard: (txt, b) => {
-        const p = parseAlloc(txt, labels);
-        if (!Object.keys(p).length) return b.retry(`I heard “${txt}”. Please name each category with an amount.`);
-        for (const l of labels) vals[l] = Math.max(0, Math.min(total, Math.round((p[l] ?? 0) / step) * step));
-        refresh();
-        if (sum() === total) b.confirmIn(3200, "Looks complete. Locking in…", finish);
-        else b.retry(`That adds up to ${sum()}${unit === "%" ? "%" : " h"} of ${total}${unit === "%" ? "%" : " h"}. Say the whole split again, or drag the sliders.`);
-      },
-    });
     const rows = labels.map((l) => {
       const r = h("input", { type: "range", min: 0, max: total, step, value: 0 });
       outs[l] = h("output", {}); ranges[l] = r;
       r.addEventListener("input", () => {
-        bar.cancelConfirm();
         const others = sum() - vals[l];
         vals[l] = Math.min(Number(r.value), +(total - others).toFixed(2)); refresh();
       });
@@ -475,7 +408,40 @@ export function askAlloc({ labels, total, step, unit, show }) {
     });
     btn.addEventListener("click", finish);
     refresh();
-    dock(bar, ...rows, h("div", { class: "alloc-foot" }, foot, btn));
+    dock(null, ...rows, h("div", { class: "alloc-foot" }, foot, btn));
+  });
+}
+
+// =====================================================================
+// Thought-bubble board (recap): the persona's thoughts pop in all at once;
+// tapping one resolves with its id, Continue resolves with "__continue"
+// (enabled only when every required bubble has a kept response).
+// =====================================================================
+const BUBBLE_SPOTS = [
+  { l: 8, t: 6 }, { l: 36, t: 2 }, { l: 64, t: 8 },
+  { l: 4, t: 44 }, { l: 32, t: 40 }, { l: 61, t: 48 }, { l: 20, t: 74 },
+];
+export function bubbleBoard({ items, done }) {
+  return new Promise((res) => {
+    const host = $("#bubbles");
+    const finish = (v) => { host.hidden = true; host.replaceChildren(); res(v); };
+    const need = items.filter((b) => !b.optional);
+    const left = need.filter((b) => !done.has(b.id)).length;
+    const btns = items.map((b, i) => {
+      const isDone = done.has(b.id);
+      const spot = BUBBLE_SPOTS[i % BUBBLE_SPOTS.length];
+      const el = h("button", {
+        class: "bubble" + (isDone ? " done" : "") + (b.optional ? " opt" : ""), type: "button",
+        style: `left:${spot.l}%; top:${spot.t}%; animation-delay:${i * 90}ms`,
+        onclick: () => finish(b.id),
+      }, h("span", { class: "bicon" }, isDone ? "✓" : b.icon), h("span", {}, b.label), h("i", {}, b.hint));
+      return el;
+    });
+    const cont = h("button", { class: "send bcont", type: "button", disabled: left > 0 },
+      left > 0 ? `${need.length - left} of ${need.length} thoughts shared` : "That's everything → continue");
+    cont.addEventListener("click", () => !cont.disabled && finish("__continue"));
+    host.replaceChildren(...btns, cont);
+    host.hidden = false;
   });
 }
 

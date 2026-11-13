@@ -236,6 +236,73 @@ export const TIME_CATS = ["Rest", "Socializing", "Work / study", "Exercise", "En
 // counterfactual task chosen by the domain of the factual event
 export const CONTEXTUAL_TASK = { work: "timePref", money: "risk", health: "timeAlloc", relationships: "social", living: "windfall", other: "resWage" };
 
+// ---------- Recap thought bubbles ----------
+// The persona's "thoughts" replace the open free-recall interview: one response is required
+// per bubble ("Others" is optional), retakes are allowed, and NO "nothing changed" shortcut
+// is offered — bare "nothing / same as always" answers are gently nudged, not accepted.
+export const BUBBLES = [
+  { id: "relationships", icon: "💞", label: "Relationships", hint: "friends · family · romance",
+    prompt: "Let's start with the people in your life — friendships, family, romance. How was that part of your month?" },
+  { id: "job", icon: "💼", label: "Job / school", hint: "work · classes",
+    prompt: "How did work or school go this month? Tell me what it's been like." },
+  { id: "hobbies", icon: "🎮", label: "Hobbies", hint: "movies · shows · music · games · sports · books",
+    prompt: "What have you been into this month — movies, shows, music, games, sports, books, anything you do for fun?" },
+  { id: "sleep", icon: "😴", label: "Sleep", hint: "nights · rest",
+    prompt: "How has your sleep been this month? What have nights looked like?" },
+  { id: "mood", icon: "🌤️", label: "Mood", hint: "feelings · energy",
+    prompt: "How have you been feeling overall this month, in your own words?" },
+  { id: "finance", icon: "💰", label: "Finance", hint: "money · spending",
+    prompt: "How did things go money-wise this month? Anything on your mind there?" },
+  { id: "others", icon: "💭", label: "Others", hint: "anything else", optional: true,
+    prompt: "Anything else on your mind this month that the other thoughts didn't cover?" },
+];
+// topic → analysis domain ("others" falls back to keyword tagging)
+export const BUBBLE_DOMAIN = { relationships: "relationships", job: "work", hobbies: "other", sleep: "health", mood: "health", finance: "money" };
+export const RECAP_REJECT_RX = /^(nothing( much)?( changed| new)?|no|nope|nah|not much|same( as (usual|always|last month))?|no change(s)?|idk|i don'?t know|没什么|没有)[.!,\s]*$/i;
+export const RECAP_NUDGE = "Even an ordinary month counts — tell me a little about how it actually went.";
+
+// ---------- Lumi Town (gamified framing layer) ----------
+// Research-integrity rules for everything town-related:
+//  • Locations mirror TOPICS only (block structure + module choice) — never answer severity.
+//    e.g. walking to the Bank because money events triggered the finance module is fine;
+//    nothing may route on scale scores.
+//  • Keepsakes (postcards, etc.) are granted on COMPLETION only, never on answer content.
+//  • Framing lines below are fixed templates, slot-filled with the persona's chosen name only.
+//    Scale item wording is never slot-filled or altered by the town layer.
+export const TOWN = {
+  // one location per block; Block B (index 2) is set at runtime from the chosen module
+  blockLoc: ["porch", "cabin", null, "market", "observatory", "home"],
+  moduleLoc: { burnout_job: "office", relationship: "park", support: "friends", physical: "gym", finance_anx: "bank", deadline: "library" },
+  locations: {
+    porch: { icon: "🏡", name: "Front Porch" },
+    cabin: { icon: "🌼", name: "Wellness Cabin" },
+    office: { icon: "🏢", name: "Office" },
+    park: { icon: "🌳", name: "Park" },
+    friends: { icon: "🏘️", name: "Neighborhood" },
+    gym: { icon: "💪", name: "Gym" },
+    bank: { icon: "🏦", name: "Bank" },
+    library: { icon: "📚", name: "Library" },
+    market: { icon: "🛒", name: "Market Square" },
+    observatory: { icon: "🔭", name: "Observatory" },
+    home: { icon: "🌙", name: "Home Sweet Home" },
+    mystery: { icon: "🎡", name: "Somewhere new…" }, // fairground tease until Block B reveals its stop
+  },
+  // Lumi's walk-and-talk lines, one per location (persona name is the only slot)
+  lines: {
+    porch: (n) => `*knock knock* There you are, ${n}!`,
+    cabin: (n) => `Walk with me to the Wellness Cabin, ${n} — time for your monthly checkup: a set of short standard questions.`,
+    office: (n) => `Let's swing by the office, ${n} — work came up this month.`,
+    park: (n) => `Let's take a slow lap around the park, ${n}.`,
+    friends: (n) => `Let's wander through the neighborhood, ${n}, and talk about the people around you.`,
+    gym: (n) => `Over to the gym, ${n} — let's talk health while we walk.`,
+    bank: (n) => `Quick stop at the bank, ${n} — money came up this month.`,
+    library: (n) => `To the library, ${n} — deadlines and to-dos live here.`,
+    market: (n) => `On to Market Square, ${n}!`,
+    observatory: (n) => `One more stop before home, ${n}: the Observatory, where we like to imagine things.`,
+    home: (n) => `And… back home, ${n}. The sun's setting on our walk.`,
+  },
+};
+
 export const SUPPORT = `
 <strong>If you're struggling, support is available.</strong><br>
 • US: call or text <strong>988</strong> (Suicide &amp; Crisis Lifeline) · text <strong>HOME</strong> to <strong>741741</strong> (Crisis Text Line)<br>

@@ -1,12 +1,14 @@
 import {
-  VERSION, DOMAINS, parseEvents, tagDomain, CORE_SCALES, scoreScale, MODULES, pickModules,
-  SHOCKS, EXPENSES, WINDFALL_CATS, TIME_CATS, CONTEXTUAL_TASK, SUPPORT, CRISIS_RX,
+  VERSION, DOMAINS, tagDomain, CORE_SCALES, scoreScale, MODULES, pickModules,
+  SHOCKS, EXPENSES, WINDFALL_CATS, TIME_CATS, CONTEXTUAL_TASK, SUPPORT, CRISIS_RX, TOWN,
+  BUBBLES, BUBBLE_DOMAIN, RECAP_REJECT_RX, RECAP_NUDGE,
 } from "./content.js";
 import {
   $, h, esc, sleep, bot, user, askText, askChoice, askMulti, askNumber, askSlider, askAlloc,
-  buildProgress, prog, initScene, mountSetupLumi, waveHello, lastSpoken,
+  initScene, mountSetupLumi, waveHello, bubbleBoard,
 } from "./ui.js";
-import * as UI from "./ui.js";
+import { loadPersona, savePersona, personaDiff, personaEl, mountIslander, openEditor } from "./persona.js";
+import { buildTown, prog, setBlockLocation, makePostcard, downloadPostcardPNG, saveAlbumEntry } from "./town.js";
 
 const fmt$ = (n) => "$" + Math.round(n).toLocaleString("en-US");
 // seeded RNG so jitter is stable per participant-month
@@ -28,6 +30,19 @@ const nice = (x) => {
 // ---------------- history (localStorage) ----------------
 const histKey = (pid) => `mci:history:${pid}`;
 const loadHistory = (pid) => { try { return JSON.parse(localStorage.getItem(histKey(pid)) || "[]"); } catch { return []; } };
+// The check-in # counts actual sittings: it advances every time an interview BEGINS, so an
+// abandoned run doesn't greet the participant with "check-in #1" forever. Completed records
+// keep their own month numbers; summaries compare against the last completed one.
+const seqKey = (pid) => `mci:seq:${pid}`;
+const lastSeq = (pid) => {
+  try { return Math.max(parseInt(localStorage.getItem(seqKey(pid)), 10) || 0, loadHistory(pid).length); }
+  catch { return loadHistory(pid).length; }
+};
+const beginMonth = (pid) => {
+  const m = lastSeq(pid) + 1;
+  try { localStorage.setItem(seqKey(pid), String(m)); } catch { /* storage may be unavailable */ }
+  return m;
+};
 const saveRecord = (rec) => {
   try {
     const hist = loadHistory(rec.participant_id);
@@ -50,43 +65,62 @@ async function runScale(scale, store, blockIdx, baseFrac, spanFrac, { skip = () 
     });
     store[it.id] = await askChoice(options.map((o) => ({ label: o.label, value: o.value })),
       { cls: isLadder ? "ladder" : options.length > 5 ? "col" : "scale", anchors: scale.anchors });
-    if (UI.lastSpoken) store[it.id + "__said"] = UI.lastSpoken; // raw spoken answer, kept alongside the mapped value
     prog(blockIdx, baseFrac + spanFrac * (n / items.length));
   }
 }
 
-// ---------------- recap ----------------
+// ---------------- recap: the persona's thought bubbles ----------------
+// One kept response per bubble (retakes allowed; "Others" optional). No "nothing changed"
+// shortcut exists: bare "nothing / same" answers are nudged and re-asked.
+async function askBubble(st, b) {
+  const prev = st.recap_bubbles[b.id];
+  let retakes = prev ? prev.retakes + 1 : 0; // re-opening a kept bubble counts as a retake
+  await bot(b.prompt, { tag: `${st.persona.name}'s thoughts · ${b.label}` });
+  while (true) {
+    const text = (await askText({ placeholder: "Tell me in your own words…" })).trim();
+    if (text.length < 5 || RECAP_REJECT_RX.test(text)) {
+      await bot(RECAP_NUDGE, { tag: b.label });
+      continue;
+    }
+    await bot(`Here's what I got:\n“${text}”`, { tag: b.label });
+    const keep = await askChoice([{ label: "✓ Keep it", value: true }, { label: "🔁 Say it again", value: false }], { cls: "scale" });
+    if (keep) { st.recap_bubbles[b.id] = { text, retakes }; return; }
+    retakes++;
+    await bot("No problem — go ahead, say it again.", { tag: b.label });
+  }
+}
+
 async function recap(st) {
   prog(0, 0);
-  await bot(`Hi, thanks for taking the time. This is check-in #${st.month}. It takes about 15 minutes, and I'll ask the same core questions each month so we can see how things shift. Everything here is voice-first: when you see the mic light up, just talk to me in your own words.`);
-  await bot("Let's start with your last month. What's changed in your life since we last talked — big or small?", { tag: "Recap" });
-  const text = await askText({ placeholder: "A few sentences is plenty…", chips: [{ label: "Nothing much changed", value: "nothing" }] });
-  st.recap_text = text;
-  const events = parseEvents(text).map((t) => ({ text: t, domain: tagDomain(t), source: "free_recall" }));
-  prog(0, 0.4);
-
-  const covered = new Set(events.map((e) => e.domain));
-  await bot("Quick check — did anything happen in these areas that we haven't talked about?", { tag: "Checklist" });
-  const keys = Object.keys(DOMAINS).filter((k) => !covered.has(k));
-  const picked = await askMulti(keys.map((k) => ({ label: DOMAINS[k], value: k })), { label: "Continue" });
-  for (const k of picked) {
-    await bot(`What happened with ${DOMAINS[k].toLowerCase()}? One line is fine.`);
-    const t = await askText({ placeholder: "Briefly…" });
-    events.push({ text: t, domain: k, source: "checklist" });
+  await bot(`${TOWN.lines.porch(st.persona.name)} Thanks for taking the time. This is check-in #${st.month}. It takes about 15 minutes, and I'll ask the same core questions each month so we can see how things shift. Everything here is voice-first: when you see the mic light up, just talk to me in your own words.`);
+  await bot(`${st.persona.name} has a few things on their mind — tap each thought bubble and tell me about that part of your month, in your own words. Every thought needs a real answer (ordinary is fine!); “Others” is optional.`, { tag: "Thoughts" });
+  st.recap_bubbles = {};
+  const done = new Set();
+  const required = BUBBLES.filter((b) => !b.optional).length;
+  while (true) {
+    const pick = await bubbleBoard({ items: BUBBLES, done });
+    if (pick === "__continue") break;
+    const b = BUBBLES.find((x) => x.id === pick);
+    await askBubble(st, b);
+    done.add(b.id);
+    prog(0, 0.8 * (Math.min(done.size, required) / required));
   }
-  prog(0, 0.75);
+  st.recap_text = BUBBLES.map((b) => st.recap_bubbles[b.id]?.text).filter(Boolean).join("\n");
 
-  st.events = events.slice(0, 6);
+  // each kept thought becomes an event for the adaptive (B) and what-if (D) blocks
+  st.events = BUBBLES.filter((b) => st.recap_bubbles[b.id]).map((b) => ({
+    text: st.recap_bubbles[b.id].text,
+    domain: BUBBLE_DOMAIN[b.id] || tagDomain(st.recap_bubbles[b.id].text),
+    topic: b.id, source: "bubble",
+  }));
+  let n = 0;
   for (const e of st.events) {
-    await bot(`“${e.text}”\nIs this a concrete change from how things were before (e.g., new job, a move), rather than business as usual?`, { tag: `${DOMAINS[e.domain]} · event` });
+    await bot(`“${e.text}”\nIs this a concrete change from how things were before (e.g., new job, a move), rather than business as usual?`, { tag: `${BUBBLES.find((b) => b.id === e.topic).label} · event` });
     e.factual = await askChoice([{ label: "Yes, something actually changed", value: true }, { label: "No, more of the same", value: false }], { cls: "scale" });
+    prog(0, 0.8 + 0.2 * (++n / st.events.length));
   }
   prog(0, 1);
-  if (st.events.length) {
-    await bot(`Got it. Here's what I noted:<ul>${st.events.map((e) => `<li>${esc(e.text)} <em>(${esc(DOMAINS[e.domain])}${e.factual ? ", changed" : ""})</em></li>`).join("")}</ul>`, { html: true });
-  } else {
-    await bot("Got it — a steady month. That's useful to know too.");
-  }
+  await bot(`Got it. Here's what I noted:<ul>${st.events.map((e) => `<li>${esc(e.text)} <em>(${esc(DOMAINS[e.domain])}${e.factual ? ", changed" : ""})</em></li>`).join("")}</ul>`, { html: true });
 }
 
 // Open-ended spoken probe (stored verbatim, to be coded later)
@@ -99,7 +133,7 @@ async function openEnded(st, key, prompt) {
 // ---------------- Block A ----------------
 async function blockA(st) {
   prog(1, 0);
-  await bot("Next, a set of short standard questions. They're the same every month, so please answer based on how things have been recently.", { tag: "Block A · Core scales" });
+  await bot(`${TOWN.lines.cabin(st.persona.name)} They're the same every month, so please answer based on how things have been recently.`, { tag: "Block A · Core scales" });
   st.scales = {};
   for (let i = 0; i < CORE_SCALES.length; i++) {
     const sc = CORE_SCALES[i];
@@ -116,9 +150,12 @@ async function blockB(st) {
   prog(2, 0);
   const mods = pickModules(st.events, st.month);
   st.adaptive = {};
-  await bot(mods[0].why
-    ? "Thanks. Based on what you told me, a couple of follow-up sets of questions — these are short."
-    : "A short extra set of questions for this month.", { tag: "Block B · Adaptive" });
+  // town stop mirrors the module TOPIC (already chosen from event text), never severity
+  const loc = TOWN.moduleLoc[mods[0].id] || "friends";
+  setBlockLocation(2, loc);
+  await bot(`${TOWN.lines[loc](st.persona.name)} ` + (mods[0].why
+    ? "Based on what you told me, a couple of follow-up sets of questions — these are short."
+    : "A short extra set of questions for this month."), { tag: "Block B · Adaptive" });
   for (let i = 0; i < mods.length; i++) {
     const m = MODULES[mods[i].id];
     let ongoing = true;
@@ -197,7 +234,7 @@ function perceivedDiff(a, b) {
 
 async function blockC(st) {
   prog(3, 0);
-  await bot("Now some choices — there are no right answers, just go with what you'd really do. Amounts are scaled to your situation.", { tag: "Block C · Choices" });
+  await bot(`${TOWN.lines.market(st.persona.name)} Now some choices — there are no right answers, just go with what you'd really do. Amounts are scaled to your situation.`, { tag: "Block C · Choices" });
   st.tasks = {};
   for (let i = 0; i < C_ORDER.length; i++) {
     const k = C_ORDER[i];
@@ -217,7 +254,7 @@ async function blockD(st) {
   const n = factual.length ? 2 : 3;
   const total = n + (factual.length ? 2 : 0);
   let done = 0;
-  await bot("Now a few “what if” scenarios. Imagine each one as vividly as you can and tell me what you'd do.", { tag: "Block D · What-ifs" });
+  await bot(`${TOWN.lines.observatory(st.persona.name)} Now a few “what if” scenarios. Imagine each one as vividly as you can and tell me what you'd do.`, { tag: "Block D · What-ifs" });
 
   for (const s of pool.slice(0, n)) {
     const slots = { amt20: fmt$(nice(st.income * 0.2)), bill: nice(st.income * 0.25).toLocaleString("en-US") };
@@ -262,7 +299,8 @@ async function blockD(st) {
 // ---------------- Close ----------------
 async function close(st) {
   prog(5, 0);
-  await bot("Almost done. Is there anything important from this month that we didn't cover?", { tag: "Close" });
+  document.body.classList.add("dusk"); // sunset on the walk home
+  await bot(`${TOWN.lines.home(st.persona.name)} Almost done. Is there anything important from this month that we didn't cover?`, { tag: "Close" });
   const last = await askText({ placeholder: "Anything at all…", chips: [{ label: "Nothing more", value: "" }] });
   st.closing_note = last;
 
@@ -294,9 +332,13 @@ function incentive(st) {
 async function finish(st) {
   st.completed_at = new Date().toISOString();
   st.incentive = incentive(st);
+  // postcard = completion keepsake: minted for every finished check-in, never keyed to answers
+  const pc = makePostcard({ name: st.persona.name, cfg: st.persona.cfg, month: st.month, date: new Date() });
+  st.postcard = { season: pc.season, created_at: st.completed_at };
   const hist = loadHistory(st.pid);
   const prev = hist[hist.length - 1];
   saveRecord(st);
+  const albumCount = saveAlbumEntry(st.pid, { month: st.month, season: pc.season, name: st.persona.name, cfg: st.persona.cfg, date: st.completed_at });
 
   const rows = [
     ["Stress (PSS-4, 0–16)", (r) => r.scales.pss4.score.total, true],
@@ -315,7 +357,11 @@ async function finish(st) {
     return `<tr><td>${label}</td><td><strong>${v}</strong>${d}</td></tr>`;
   }).join("");
 
-  await bot("That's everything — thank you. Your check-in is saved on this device.", {});
+  const b0 = await bot(`That's everything — thank you for walking with me, ${esc(st.persona.name)}! Your check-in is saved on this device, and here's this month's postcard${albumCount ? ` — number ${albumCount} in your album` : ""}.
+    <div class="postcard-slot"></div>
+    <div class="dl"><button id="dl-card">Save postcard (PNG)</button></div>`, { html: true });
+  b0.querySelector(".postcard-slot").append(pc.el);
+  b0.querySelector("#dl-card").onclick = () => downloadPostcardPNG(pc.el, `postcard_${st.pid}_m${st.month}.png`);
   const b = await bot(`<strong>This month at a glance</strong>${prev ? `<br><span class="hint">Change since check-in #${prev.month}</span>` : ""}<table>${rows}</table>
     ${st.incentive.selected ? `<p>🎲 One of your money choices was randomly selected for a small real payout in the full study (demo only: ${esc(st.incentive.task)}).</p>` : ""}
     <div class="dl"><button id="dl-json">Download my data (JSON)</button><button id="restart">Start over</button></div>`, { html: true });
@@ -329,31 +375,60 @@ async function finish(st) {
 }
 
 // ---------------- boot ----------------
-async function start(pid, income) {
-  const hist = loadHistory(pid);
-  const month = hist.length + 1;
+// Between setup and the interview: first visit → islander creator; return visit → the
+// "mirror moment" (last month's look, change anything). Edits are logged, not judged.
+function beginCheckin(pid, income) {
+  const saved = loadPersona(pid);
+  $("#setup").hidden = true;
+  openEditor({
+    saved,
+    onDone: ({ name, cfg, seconds }) => {
+      const prev = saved?.cfg ?? null;
+      savePersona(pid, { v: 1, name, cfg, saved_at: new Date().toISOString() });
+      start(pid, income, {
+        name, cfg,
+        prev,
+        diff: prev ? personaDiff(prev, cfg) : null,
+        editor: { seconds: +seconds.toFixed(1), first_time: !saved },
+      });
+    },
+  });
+}
+
+async function start(pid, income, p) {
+  const month = beginMonth(pid);
   const r = rng(`${pid}:${month}`);
   const jit = () => 0.9 + 0.2 * r(); // ±10% per month
   const st = {
     bot_version: VERSION, participant_id: pid, pid, month, income,
+    persona: { name: p.name, cfg: p.cfg },
+    persona_prev: p.prev, persona_diff: p.diff, persona_editor: p.editor,
     started_at: new Date().toISOString(),
     jit: { timePref: jit(), risk: jit(), windfall: jit(), timeAlloc: jit(), resWage: jit(), social: jit() },
   };
-  $("#setup").hidden = true; $("#app").hidden = false;
-  $("#badge").textContent = `${pid} · check-in #${month}`;
-  initScene(); waveHello(); buildProgress(); prog(0, 0);
+  $("#app").hidden = false;
+  $("#badge").textContent = `${p.name} · check-in #${month}`;
+  initScene(); mountIslander(p.cfg); waveHello(); buildTown(p.cfg); prog(0, 0);
+  $("#islander").addEventListener("click", () => {
+    const w = $("#islander"); w.classList.remove("hop"); void w.offsetWidth; w.classList.add("hop");
+  });
   try {
     await recap(st); await blockA(st); await blockB(st); await blockC(st); await blockD(st); await close(st); await finish(st);
   } catch (e) { console.error(e); await bot("Something went wrong on our side. Your earlier answers are not lost on this page; please reload to restart."); }
 }
 
 $("#pid").addEventListener("input", () => {
-  const n = loadHistory($("#pid").value.trim()).length;
-  $("#history-note").textContent = n ? `Welcome back — this will be check-in #${n + 1}.` : "";
+  const id = $("#pid").value.trim();
+  const n = lastSeq(id);
+  const p = loadPersona(id);
+  $("#history-note").textContent = n
+    ? `Welcome back${p ? `, ${p.name}` : ""} — this will be check-in #${n + 1}.`
+    : p ? `${p.name} is all set up and waiting in Lumi Town.` : "";
+  $("#setup-persona").replaceChildren(...(p ? [personaEl(p.cfg)] : []));
 });
 $("#setup-form").addEventListener("submit", (e) => {
   e.preventDefault();
-  start($("#pid").value.trim(), Number($("#income").value));
+  beginCheckin($("#pid").value.trim(), Number($("#income").value));
 });
 
 mountSetupLumi();

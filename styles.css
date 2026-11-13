@@ -221,6 +221,107 @@ input[type="range"] { width: 100%; accent-color: var(--leaf-d); height: 22px; }
 .vtyperow { display: flex; gap: 8px; margin-top: 8px; }
 .vtyperow input { flex: 1; min-width: 0; padding: 8px 14px; border: 3px solid #e5cf95; border-radius: 999px; background: #fff; outline: 0; font-weight: 600; }
 
+/* ---- location scenery (stage backdrop) ---- */
+.scenery { position: absolute; left: 1%; bottom: 2px; height: 76%; max-height: 235px; aspect-ratio: 240 / 220; pointer-events: none; }
+.scenery svg { width: 100%; height: 100%; overflow: visible; }
+.scenery.pop { animation: pop .35s cubic-bezier(.3, 1.4, .5, 1); }
+.lumi-wrap { position: relative; } /* keep Lumi painting above the (positioned) scenery */
+@media (max-width: 560px) { .scenery { display: none; } }
+
+/* ---- islander (persona) ---- */
+.islander { width: 100%; height: auto; overflow: visible; }
+.islander .pbody { transform-origin: 100px 228px; animation: bob 3.2s ease-in-out infinite; }
+.islander-wrap { position: absolute; right: 3%; bottom: 6px; height: 68%; max-height: 215px; aspect-ratio: 200 / 240; cursor: pointer; -webkit-tap-highlight-color: transparent; }
+.islander-wrap.hop .pbody { animation: hop .6s ease-out 1; }
+.setup-persona { width: 76px; margin: -4px auto 8px; }
+.setup-persona:empty { display: none; }
+
+/* ---- creator / monthly mirror ---- */
+.creator-card { width: min(640px, 100%); }
+.creator-grid { display: grid; grid-template-columns: 180px 1fr; gap: 18px; align-items: start; }
+.creator-preview { background: #fff; border: 3px solid #e5cf95; border-radius: 20px; padding: 10px; }
+.creator-preview .islander .pbody { animation: bob 2.6s ease-in-out infinite; }
+.creator-rows { display: flex; flex-direction: column; }
+.crow { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 3px 0; margin-bottom: 0 !important; }
+.crl { flex: 0 0 5.6rem; font-size: .8rem; font-weight: 700; }
+.crow.name-row input { flex: 1; min-width: 0; margin-top: 0 !important; padding: 7px 14px !important; }
+.crow input.err { border-color: #e25b4a !important; }
+.cyc-row { display: flex; align-items: center; gap: 6px; flex: 1; justify-content: flex-end; }
+.cyc { width: 30px; height: 30px; border-radius: 50%; border: 3px solid var(--wood-l); background: #fff; cursor: pointer; font-size: .7rem; line-height: 1; box-shadow: 0 2px 0 rgba(122, 90, 60, .2); }
+.cyc:active { transform: translateY(2px); box-shadow: none; }
+.cyc-val { min-width: 6.2rem; text-align: center; font-family: "Fredoka"; font-size: .85rem; }
+.swatches { display: flex; gap: 6px; flex-wrap: wrap; justify-content: flex-end; }
+.swatch { width: 24px; height: 24px; border-radius: 50%; border: 2px solid rgba(0, 0, 0, .18); cursor: pointer; padding: 0; }
+.swatch.sel { outline: 3px solid var(--leaf-d); outline-offset: 2px; }
+.creator-actions { display: flex; justify-content: space-between; align-items: center; gap: 10px; margin-top: 16px; }
+@media (max-width: 560px) {
+  .creator-grid { grid-template-columns: 1fr; }
+  .creator-preview { width: 150px; margin: 0 auto; }
+  .crl { flex-basis: 4.6rem; }
+  .cyc-val { min-width: 4.8rem; }
+}
+
+/* ---- Lumi Town strip (progress) ---- */
+.town { position: relative; height: 78px; }
+.troad { position: absolute; left: 1%; right: 1%; bottom: 20px; height: 12px; border-radius: 999px; background: rgba(255, 255, 255, .7); border: 3px solid var(--wood-l); overflow: hidden; }
+.troad i { display: block; height: 100%; width: 0; background: repeating-linear-gradient(45deg, var(--leaf), var(--leaf) 6px, #7fd08c 6px, #7fd08c 12px); transition: width 1.2s cubic-bezier(.4, 0, .2, 1); }
+.tnode { position: absolute; bottom: 42px; transform: translateX(-50%); }
+.tnode .plq { width: 32px; height: 32px; border-radius: 50%; background: var(--cream); border: 3px solid var(--wood-l); display: grid; place-items: center; font-size: 16px; box-shadow: 0 3px 0 rgba(122, 90, 60, .2); transition: transform .3s, background .3s; }
+.tnode b { position: absolute; top: 56px; left: 50%; transform: translateX(-50%); font-size: .58rem; font-weight: 700; white-space: nowrap; opacity: .55; }
+.tnode.on .plq { background: var(--mint); border-color: var(--leaf-d); transform: scale(1.15); }
+.tnode.on b { opacity: 1; color: var(--leaf-d); }
+.tnode.done .plq { opacity: .8; }
+.tmini { position: absolute; bottom: 26px; width: 38px; transform: translateX(-50%); transition: left 1.3s ease-in-out; z-index: 2; pointer-events: none; }
+.tmini .islander .pbody { animation: none; }
+.tmini.walking { animation: tstep .22s ease-in-out infinite alternate; }
+@keyframes tstep { from { transform: translateX(-50%) translateY(0); } to { transform: translateX(-50%) translateY(-4px) rotate(2deg); } }
+.ttoast { position: absolute; bottom: 80px; transform: translateX(-50%); background: #fff; border: 3px solid var(--wood-l); border-radius: 999px; padding: 3px 12px; font-family: "Fredoka"; font-size: .75rem; white-space: nowrap; z-index: 3; animation: toast 2.4s forwards; box-shadow: 0 3px 0 rgba(122, 90, 60, .2); }
+@keyframes toast { 0% { opacity: 0; margin-bottom: -6px; } 12% { opacity: 1; margin-bottom: 0; } 80% { opacity: 1; } 100% { opacity: 0; } }
+@media (max-width: 560px) {
+  .tnode b { display: none; }
+  .tnode.on b { display: block; }
+  .islander-wrap { max-height: 130px; }
+}
+
+/* ---- thought bubbles (recap) ---- */
+.bubbles { position: absolute; inset: 0; z-index: 3; }
+.bubble {
+  position: absolute; width: clamp(130px, 23%, 175px); background: #fff; border: 3px solid var(--wood-l);
+  border-radius: 24px; padding: 9px 13px 11px; cursor: pointer; text-align: left; font-family: "Fredoka";
+  box-shadow: var(--shadow); transition: transform .12s, background .12s;
+  animation: bpop .45s cubic-bezier(.3, 1.4, .5, 1) backwards, bfloat 3.4s ease-in-out infinite;
+}
+.bubble::after { content: ""; position: absolute; right: -11px; bottom: -9px; width: 12px; height: 12px; border-radius: 50%; background: #fff; border: 3px solid var(--wood-l); }
+.bubble::before { content: ""; position: absolute; right: -22px; bottom: -19px; width: 7px; height: 7px; border-radius: 50%; background: #fff; border: 2.5px solid var(--wood-l); }
+.bubble:hover { transform: translateY(-3px) scale(1.03); background: var(--cream2); }
+.bubble .bicon { font-size: 1.05rem; margin-right: 6px; }
+.bubble > span:not(.bicon) { font-size: .92rem; }
+.bubble i { display: block; font-style: normal; font-size: .62rem; opacity: .6; font-family: "Nunito"; font-weight: 700; margin-top: 2px; }
+.bubble.done { background: var(--mint); border-color: var(--leaf-d); }
+.bubble.done::after, .bubble.done::before { background: var(--mint); border-color: var(--leaf-d); }
+.bubble.done .bicon { color: var(--leaf-d); }
+.bubble.opt { border-style: dashed; }
+.bubble.opt::after, .bubble.opt::before { border-style: dashed; }
+.bcont { position: absolute; left: 50%; bottom: 2%; transform: translateX(-50%); white-space: nowrap; }
+@keyframes bpop { from { opacity: 0; transform: scale(.4); } }
+@keyframes bfloat { 50% { margin-top: -5px; } }
+@media (max-width: 560px) {
+  .bubbles { display: flex; flex-wrap: wrap; gap: 8px; align-content: center; padding: 6px; overflow-y: auto; }
+  .bubbles[hidden] { display: none; }
+  .bubble { position: static !important; width: 47%; animation: bpop .45s backwards; }
+  .bcont { position: static; transform: none; margin: 6px auto 0; }
+}
+
+/* ---- postcard ---- */
+.postcard-slot { margin-top: 10px; }
+.postcard-slot svg { width: 100%; max-width: 380px; height: auto; border-radius: 10px; box-shadow: var(--shadow); }
+
+/* ---- dusk (walk home) ---- */
+body { transition: background 2s; }
+body.dusk { background: linear-gradient(#f6c893, #fbe7c4 70%); }
+body.dusk .hill { filter: brightness(.9) saturate(.75); }
+body.dusk .cloud { opacity: .45; }
+
 /* nametag fix: pin to the box's top edge */
 .dialog { overflow: visible; padding-top: 30px; }
 .dialog .dlg-body { max-height: calc(40vh - 60px); overflow-y: auto; }

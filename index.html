@@ -49,11 +49,20 @@
           <input id="income" type="number" min="0" step="50" required placeholder="e.g. 4000">
           <span class="hint">Only used to scale the dollar amounts in the choice tasks.</span>
         </label>
+        <div id="setup-persona" class="setup-persona"></div>
         <p id="history-note" class="hint"></p>
         <label class="check"><input type="checkbox" id="consent" required>
           <span>I understand this is a research check-in, I'll answer by voice (my browser's speech recognition may send audio to the browser vendor), my answers are stored on this device, and I can stop at any time.</span></label>
         <button class="primary" type="submit">Let's go!</button>
       </form>
+    </div>
+  </main>
+
+  <!-- Islander creator / monthly mirror -->
+  <main id="creator" class="setup" hidden>
+    <div class="passport creator-card">
+      <div class="ribbon" id="creator-ribbon">Your islander</div>
+      <div id="creator-body"></div>
     </div>
   </main>
 
@@ -71,8 +80,11 @@
     </header>
 
     <section class="stage" id="stage">
+      <div id="scenery" class="scenery" aria-hidden="true"></div>
       <div id="lumi" class="lumi-wrap" title="Poke me!"></div>
+      <div id="islander" class="islander-wrap" title="That's you!"></div>
       <div id="you" class="you" hidden></div>
+      <div id="bubbles" class="bubbles" hidden></div>
     </section>
 
     <div id="dock" class="dock"></div>
@@ -94,5 +106,6 @@
   </div>
 
   <script type="module" src="app.js"></script>
+  <script type="module" src="drive.js"></script>
 </body>
 </html>
