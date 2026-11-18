@@ -1,8 +1,9 @@
 import {
-  VERSION, DOMAINS, tagDomain, CORE_SCALES, scoreScale, MODULES, pickModules,
+  VERSION, DOMAINS, CORE_SCALES, scoreScale, MODULES, pickModules,
   SHOCKS, EXPENSES, WINDFALL_CATS, TIME_CATS, CONTEXTUAL_TASK, SUPPORT, CRISIS_RX, TOWN,
-  BUBBLES, BUBBLE_DOMAIN, RECAP_REJECT_RX, RECAP_NUDGE,
+  BUBBLES, RECAP_REJECT_RX, RECAP_NUDGE, RECAP_EG_NOTE, COUNTERFACTUAL_TEMPLATE,
 } from "./content.js";
+import { detectEvents } from "./llm.js";
 import {
   $, h, esc, sleep, bot, user, askText, askChoice, askMulti, askNumber, askSlider, askAlloc,
   initScene, mountSetupLumi, waveHello, bubbleBoard,
@@ -70,21 +71,32 @@ async function runScale(scale, store, blockIdx, baseFrac, spanFrac, { skip = () 
 }
 
 // ---------------- recap: the persona's thought bubbles ----------------
-// One kept response per bubble (retakes allowed; "Others" optional). No "nothing changed"
-// shortcut exists: bare "nothing / same" answers are nudged and re-asked.
+// One kept response per required bubble (retakes allowed). No "nothing changed" shortcut for
+// required bubbles — bare "nothing / same" answers are nudged and re-asked. "Others" is
+// optional: opening it never traps the participant — an empty / "nothing" answer (or its
+// "back to the thoughts" chip) just returns to the board unanswered.
+// Returns true if a response was kept, false if the (optional) bubble was skipped.
 async function askBubble(st, b) {
   const prev = st.recap_bubbles[b.id];
   let retakes = prev ? prev.retakes + 1 : 0; // re-opening a kept bubble counts as a retake
   await bot(b.prompt, { tag: `${st.persona.name}'s thoughts · ${b.label}` });
   while (true) {
-    const text = (await askText({ placeholder: "Tell me in your own words…" })).trim();
+    const text = (await askText({
+      voiceOnly: true, // life updates are spoken, not typed
+      example: b.eg && { ...b.eg, note: RECAP_EG_NOTE },
+      chips: b.optional ? [{ label: "Nothing else — back to the thoughts", value: "" }] : [],
+    })).trim();
+    if (b.optional && (!text || RECAP_REJECT_RX.test(text))) {
+      delete st.recap_bubbles[b.id];
+      return false;
+    }
     if (text.length < 5 || RECAP_REJECT_RX.test(text)) {
       await bot(RECAP_NUDGE, { tag: b.label });
       continue;
     }
     await bot(`Here's what I got:\n“${text}”`, { tag: b.label });
     const keep = await askChoice([{ label: "✓ Keep it", value: true }, { label: "🔁 Say it again", value: false }], { cls: "scale" });
-    if (keep) { st.recap_bubbles[b.id] = { text, retakes }; return; }
+    if (keep) { st.recap_bubbles[b.id] = { text, retakes }; return true; }
     retakes++;
     await bot("No problem — go ahead, say it again.", { tag: b.label });
   }
@@ -101,26 +113,41 @@ async function recap(st) {
     const pick = await bubbleBoard({ items: BUBBLES, done });
     if (pick === "__continue") break;
     const b = BUBBLES.find((x) => x.id === pick);
-    await askBubble(st, b);
-    done.add(b.id);
+    if (await askBubble(st, b)) done.add(b.id);
+    else done.delete(b.id); // optional bubble skipped (or un-answered on re-open)
     prog(0, 0.8 * (Math.min(done.size, required) / required));
   }
   st.recap_text = BUBBLES.map((b) => st.recap_bubbles[b.id]?.text).filter(Boolean).join("\n");
 
-  // each kept thought becomes an event for the adaptive (B) and what-if (D) blocks
-  st.events = BUBBLES.filter((b) => st.recap_bubbles[b.id]).map((b) => ({
-    text: st.recap_bubbles[b.id].text,
-    domain: BUBBLE_DOMAIN[b.id] || tagDomain(st.recap_bubbles[b.id].text),
-    topic: b.id, source: "bubble",
+  // The event harness replaces the old per-event "is this a concrete change?" interrogation:
+  // llm.js (model if configured, keyword rules otherwise) labels each thought as eventful,
+  // extracts a short event phrase, and — model path only — picks the most interesting events
+  // and writes their counterfactual questions. One skippable tap-to-fix screen follows.
+  const det = await detectEvents(BUBBLES.filter((b) => st.recap_bubbles[b.id])
+    .map((b) => ({ topic: b.id, text: st.recap_bubbles[b.id].text })));
+  st.event_detection = { method: det.method, model: det.model ?? null };
+  st.events = det.events.map((e) => ({
+    text: st.recap_bubbles[e.topic].text,
+    event: e.event, domain: e.domain, eventful: e.eventful, question: e.question,
+    topic: e.topic, source: "bubble",
   }));
-  let n = 0;
+  prog(0, 0.85);
+
+  const detected = st.events.filter((e) => e.eventful).map((e) => e.topic);
+  await bot("Here's what I picked up as things that actually happened this month (ticked below) — tap to fix me if I got any wrong, then continue.", { tag: "Quick check" });
+  const confirmed = await askMulti(
+    st.events.map((e) => ({ label: `${BUBBLES.find((b) => b.id === e.topic).label}: ${e.event}`, value: e.topic })),
+    { label: "Looks right — continue", initial: detected },
+  );
+  let corrections = 0;
   for (const e of st.events) {
-    await bot(`“${e.text}”\nIs this a concrete change from how things were before (e.g., new job, a move), rather than business as usual?`, { tag: `${BUBBLES.find((b) => b.id === e.topic).label} · event` });
-    e.factual = await askChoice([{ label: "Yes, something actually changed", value: true }, { label: "No, more of the same", value: false }], { cls: "scale" });
-    prog(0, 0.8 + 0.2 * (++n / st.events.length));
+    const f = confirmed.includes(e.topic);
+    if (f !== e.eventful) corrections++;
+    e.eventful = f;
   }
+  st.event_detection.corrections = corrections;
   prog(0, 1);
-  await bot(`Got it. Here's what I noted:<ul>${st.events.map((e) => `<li>${esc(e.text)} <em>(${esc(DOMAINS[e.domain])}${e.factual ? ", changed" : ""})</em></li>`).join("")}</ul>`, { html: true });
+  await bot(`Got it. Here's what I noted:<ul>${st.events.map((e) => `<li>${esc(e.event)} <em>(${esc(DOMAINS[e.domain])}${e.eventful ? ", happened" : ""})</em></li>`).join("")}</ul>`, { html: true });
 }
 
 // Open-ended spoken probe (stored verbatim, to be coded later)
@@ -248,11 +275,11 @@ async function blockC(st) {
 async function blockD(st) {
   prog(4, 0);
   st.hypothetical = []; st.contextual = [];
-  const factual = st.events.filter((e) => e.factual);
+  const eventful = st.events.filter((e) => e.eventful);
   const phase = (st.month - 1) % 3;
   const pool = SHOCKS.filter((s) => s.phase === phase);
-  const n = factual.length ? 2 : 3;
-  const total = n + (factual.length ? 2 : 0);
+  const n = eventful.length ? 2 : 3;
+  const total = n + (eventful.length ? 2 : 0);
   let done = 0;
   await bot(`${TOWN.lines.observatory(st.persona.name)} Now a few “what if” scenarios. Imagine each one as vividly as you can and tell me what you'd do.`, { tag: "Block D · What-ifs" });
 
@@ -272,23 +299,24 @@ async function blockD(st) {
     prog(4, ++done / total);
   }
 
-  if (factual.length) {
-    const main = factual[0];
-    const other = st.events.find((e) => e !== main);
-    await bot(`Now a couple of questions about something you mentioned: “${main.text}”`, { tag: "Contextual" });
-    await bot(other
-      ? `Suppose that had not happened. Would you still have this one: “${other.text}”?`
-      : "Suppose that had not happened. Would the rest of your month have gone about the same?");
-    const yn = await askChoice([{ label: "Yes", value: "yes" }, { label: "No", value: "no" }, { label: "Unsure", value: "unsure" }], { cls: "scale" });
-    await bot("In one line, why?");
-    const why = await askText({ placeholder: "One line…" });
-    st.contextual.push({ type: "counterfactual_judgment", event: main.text, other_event: other?.text ?? null, answer: yn, reason: why });
+  if (eventful.length) {
+    // The probe question is model-written when the harness picked this event (question_source:
+    // "model", validated in llm.js); otherwise the fixed template fills in.
+    const main = eventful.find((e) => e.question) || eventful[0];
+    const q = main.question || COUNTERFACTUAL_TEMPLATE(main.event);
+    await bot(`Now, about something you mentioned: “${main.event}”`, { tag: "Contextual" });
+    await bot(q, { tag: "What if not" });
+    const answer = await askText({ placeholder: "Tell me in your own words…" });
+    st.contextual.push({
+      type: "counterfactual_probe", event: main.event, question: q,
+      question_source: main.question ? "model" : "template", answer,
+    });
     prog(4, ++done / total);
 
     const k = CONTEXTUAL_TASK[main.domain] || "resWage";
     const res = await T[k](st, st.income, "Suppose that had not happened. ", `${TASK_NAME[k]} (counterfactual)`);
     st.contextual.push({
-      type: "counterfactual_task", event: main.text, task: k, result: res,
+      type: "counterfactual_task", event: main.event, task: k, result: res,
       perceived_effect: perceivedDiff(res.value, st.tasks[k].value), // actual − counterfactual; perceived, not causal
     });
     prog(4, ++done / total);

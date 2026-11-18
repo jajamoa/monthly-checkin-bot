@@ -283,6 +283,12 @@ input[type="range"] { width: 100%; accent-color: var(--leaf-d); height: 22px; }
   .islander-wrap { max-height: 130px; }
 }
 
+/* ---- few-shot example above free-text answers ---- */
+.vex { font-size: .82rem; background: #fff; border: 2px dashed #e5cf95; border-radius: 14px; padding: 7px 12px; margin-bottom: 8px; line-height: 1.5; }
+.vex-note { display: block; font-family: "Fredoka"; color: var(--orange); margin-bottom: 2px; }
+.vex-from { opacity: .55; }
+.vex-to { color: var(--leaf-d); font-weight: 700; }
+
 /* ---- thought bubbles (recap) ---- */
 .bubbles { position: absolute; inset: 0; z-index: 3; }
 .bubble {

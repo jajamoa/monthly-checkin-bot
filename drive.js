@@ -28,11 +28,13 @@ if (new URLSearchParams(location.search).has("drive")) {
         return;
       }
       const bb = $("#bubbles");
-      if (bb && !bb.hidden) { // thought-bubble board: answer each thought, then continue
-        const todo = bb.querySelector(".bubble:not(.done)");
+      if (bb && !bb.hidden) { // thought-bubble board: answer required thoughts only, then
+        // continue — deliberately skipping the optional "Others" bubble, which asserts that
+        // the board never requires it.
         const cont = bb.querySelector(".bcont");
+        if (cont && !cont.disabled) { cont.click(); return; }
+        const todo = bb.querySelector(".bubble:not(.done):not(.opt)") || bb.querySelector(".bubble:not(.done)");
         if (todo) todo.click();
-        else if (cont && !cont.disabled) cont.click();
         return;
       }
       const dock = $("#dock .dock-inner");
@@ -44,6 +46,11 @@ if (new URLSearchParams(location.search).has("drive")) {
       const opts = [...dock.querySelectorAll(".opt")];
       const fire = (el) => el.dispatchEvent(new Event("input", { bubbles: true }));
       if (ta) { ta.value = "I started a new job and I moved to a new apartment"; fire(ta); if (send && !send.disabled) send.click(); return; }
+      if (!num && !ranges.length && !opts.length && dock.querySelector(".vbar")) {
+        // voice-only dock (recap bubbles): inject a spoken answer
+        window.__say?.("I started a new job and I moved to a new apartment");
+        return;
+      }
       if (num) { num.value = "35"; fire(num); if (send && !send.disabled) send.click(); return; }
       if (ranges.length) { for (const r of ranges) { r.value = r.max; fire(r); } if (send && !send.disabled) send.click(); return; }
       if (opts.length) {

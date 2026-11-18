@@ -48,7 +48,6 @@ export function extractNumbers(txt) {
   }
   return out;
 }
-export const parseNumber = (txt) => { const n = extractNumbers(txt)[0]; return n ? n.value : null; };
 
 const STOP = new Set("a an the of to in on at for and or is it i my me we be do you your that this one with about"
   .split(" ").concat(["out", "notable", "event", "situation", "living", "i'm", "it's", "um", "uh", "like", "would", "say", "choose", "pick", "go", "take", "answer", "think", "maybe", "probably"]));
@@ -195,14 +194,15 @@ let activeSay = null, currentBar = null;
 export let lastSpoken = "";
 window.__say = (t) => activeSay && activeSay(t); // test / accessibility hook: injects a "spoken" answer
 
-function voiceBar({ hint = "", continuous = false, silenceMs = 1300, onHeard }) {
+function voiceBar({ hint = "", continuous = false, silenceMs = 1300, onHeard, allowType = true }) {
   let rec = null, dead = false, listening = false, delivered = false, manualStop = false, retries = 0, finalText = "", interim = "", timer = null, cancelConfirm = null;
   const mic = h("button", { class: "mic", type: "button", "aria-label": "Microphone" }, "🎤");
   const status = h("div", { class: "vstatus" }), live = h("div", { class: "vlive" });
   const typeInput = h("input", { type: "text", placeholder: "Type your answer", autocomplete: "off" });
   const typeRow = h("div", { class: "vtyperow", hidden: true }, typeInput, h("button", { class: "chip", type: "button", onclick: () => submitTyped() }, "Send"));
   const typeLink = h("button", { class: "vtype", type: "button", onclick: () => { typeRow.hidden = !typeRow.hidden; typeInput.focus(); } }, "⌨ type instead");
-  const el = h("div", { class: "vbar" }, h("div", { class: "vrow" }, mic, h("div", { class: "vtext" }, status, live)), hint && h("div", { class: "vhint" }, hint), typeRow, typeLink);
+  const el = h("div", { class: "vbar" }, h("div", { class: "vrow" }, mic, h("div", { class: "vtext" }, status, live)), hint && h("div", { class: "vhint" }, hint),
+    ...(allowType ? [typeRow, typeLink] : []));
   const setStatus = (t, cls = "") => { status.textContent = t; status.className = "vstatus " + cls; };
 
   function deliver(txt) {
@@ -220,8 +220,12 @@ function voiceBar({ hint = "", continuous = false, silenceMs = 1300, onHeard }) 
     if (dead || listening) return;
     cancelConfirm?.(); cancelConfirm = null;
     delivered = false; manualStop = false; finalText = ""; interim = "";
-    if (!SR) { typeRow.hidden = false; setStatus("Voice isn't supported in this browser, so please type (Chrome, Edge or Safari work best)."); return; }
-    try { rec = new SR(); } catch { typeRow.hidden = false; return; }
+    if (!SR) {
+      if (allowType) { typeRow.hidden = false; setStatus("Voice isn't supported in this browser, so please type (Chrome, Edge or Safari work best)."); }
+      else setStatus("Voice isn't supported in this browser — please use Chrome, Edge or Safari.", "warn");
+      return;
+    }
+    try { rec = new SR(); } catch { if (allowType) typeRow.hidden = false; return; }
     rec.lang = "en-US"; rec.interimResults = true; rec.continuous = continuous; rec.maxAlternatives = 1;
     rec.onresult = (e) => {
       let f = "", i = "";
@@ -230,7 +234,19 @@ function voiceBar({ hint = "", continuous = false, silenceMs = 1300, onHeard }) 
       clearTimeout(timer); timer = setTimeout(() => { try { rec.stop(); } catch {} }, silenceMs);
     };
     rec.onerror = (e) => {
-      if (e.error === "not-allowed" || e.error === "service-not-allowed") { manualStop = true; typeRow.hidden = false; setStatus("Microphone is blocked. Allow it in your browser, or type instead.", "warn"); }
+      console.warn("[voice] speech recognition error:", e.error, e.message || "");
+      if (e.error === "no-speech" || e.error === "aborted") return; // routine; onend retries
+      manualStop = true; // fatal: stop the silent auto-retry loop and keep the explanation visible
+      if (e.error === "not-allowed" || e.error === "service-not-allowed") {
+        if (allowType) { typeRow.hidden = false; setStatus("Microphone is blocked. Allow it in your browser, or type instead.", "warn"); }
+        else setStatus("Microphone is blocked — click the mic/lock icon in the address bar, allow the microphone, then tap the mic here.", "warn");
+      } else if (e.error === "network") {
+        setStatus("Can't reach the speech service — speech recognition needs an internet connection. Check it, then tap the mic.", "warn");
+      } else if (e.error === "audio-capture") {
+        setStatus("No microphone detected — check your sound settings (on a Mac: System Settings → Privacy & Security → Microphone → allow your browser), then tap the mic.", "warn");
+      } else {
+        setStatus(`Speech recognition failed (${e.error}). Tap the mic to try again.`, "warn");
+      }
     };
     rec.onend = () => {
       listening = false; el.classList.remove("on"); clearTimeout(timer);
@@ -238,7 +254,7 @@ function voiceBar({ hint = "", continuous = false, silenceMs = 1300, onHeard }) 
       if (dead || delivered) return;
       if (txt) deliver(txt);
       else if (!manualStop && retries++ < 2) start();
-      else setStatus("Tap the mic and speak");
+      else if (!manualStop) setStatus("Tap the mic and speak"); // a fatal error keeps its own message
     };
     try { rec.start(); listening = true; el.classList.add("on"); setStatus("Listening… answer in your own words"); live.textContent = ""; }
     catch { setStatus("Tap the mic and speak"); }
@@ -283,25 +299,42 @@ export function clearDock() { currentBar?.destroy(); currentBar = null; $("#dock
 // =====================================================================
 // Answer widgets (voice-first, tap/type fallback)
 // =====================================================================
-export function askText({ placeholder = "Your answer will appear here…", chips = [], min = 2 } = {}) {
+export function askText({ placeholder = "Your answer will appear here…", chips = [], min = 2, example = null, voiceOnly = false } = {}) {
   return new Promise((res) => {
     const ta = h("textarea", { rows: 2, placeholder });
+    // few-shot nudge: an explicit "be specific" note + a vague answer rewritten with the
+    // concreteness we're after ({ from, to, note })
+    const vex = example && h("div", { class: "vex" },
+      example.note && h("b", { class: "vex-note" }, example.note),
+      h("span", {}, "💡 ", h("span", { class: "vex-from" }, `“${example.from}”`), " → ",
+        h("span", { class: "vex-to" }, `“${example.to}”`)));
     const finish = (v, label) => { clearDock(); user(label ?? v); res(v); };
     const chipOpts = chips.map((c) => ({ label: c.label, value: c.value }));
     const bar = voiceBar({
-      hint: "Speak freely: pause when you're done and I'll send it. You can edit the text first.",
+      hint: voiceOnly
+        ? "Speak freely: pause when you're done and I'll send it."
+        : "Speak freely: pause when you're done and I'll send it. You can edit the text first.",
+      allowType: !voiceOnly, // life updates: no typing at all — mic required
       continuous: true, silenceMs: 2200,
       onHeard: (txt, b) => {
         const chip = chipOpts.length && txt.split(/\s+/).length <= 6 ? matchOption(txt, chipOpts) : null;
         if (chip && norm(txt).includes(norm(chip.label).slice(0, 8))) return b.confirmIn(1500, `“${chip.label}”`, () => finish(chip.value, chip.label));
-        ta.value = txt;
+        if (!voiceOnly) ta.value = txt;
         if (txt.length < min) return b.retry("That was a bit short. Could you say a little more?");
         b.confirmIn(2600, "Sending…", () => finish(txt));
       },
     });
+    const chipRow = chips.length
+      ? h("div", { class: "chips" }, chips.map((c) => h("button", { class: "chip", type: "button", onclick: () => finish(c.value, c.label) }, c.label)))
+      : null;
+    if (voiceOnly) {
+      // no textarea, no Send: the spoken answer is the answer (the voice bar's own
+      // "type instead" fallback remains for blocked mics / unsupported browsers)
+      dock(bar, vex, chipRow && h("div", { class: "dock-actions" }, chipRow));
+      return;
+    }
     ta.addEventListener("input", () => { bar.cancelConfirm(); });
-    dock(bar, ta, h("div", { class: "dock-actions" },
-      h("div", { class: "chips" }, chips.map((c) => h("button", { class: "chip", type: "button", onclick: () => finish(c.value, c.label) }, c.label))),
+    dock(bar, vex, ta, h("div", { class: "dock-actions" }, chipRow,
       h("button", { class: "send", type: "button", onclick: () => ta.value.trim() && finish(ta.value.trim()) }, "Send")));
   });
 }
@@ -314,7 +347,7 @@ export function askChoice(options, { cls = "col", anchors = null } = {}) {
   });
 }
 
-export function askMulti(options, { exact = null, min = 0, label = "Done" } = {}) {
+export function askMulti(options, { exact = null, min = 0, label = "Done", initial = [] } = {}) {
   return new Promise((res) => {
     const sel = new Set();
     const btn = h("button", { class: "send", type: "button" }, label);
@@ -334,6 +367,7 @@ export function askMulti(options, { exact = null, min = 0, label = "Done" } = {}
       clearDock(); user(vals.length ? vals.map((o) => o.label).join(", ") : "Nothing else"); res(vals.map((o) => o.value));
     };
     btn.addEventListener("click", finish);
+    options.forEach((o, i) => { if (initial.includes(o.value)) toggle(o, buttons[i], true); }); // preselect
     sync();
     dock(null, h("div", { class: "opts" }, buttons), h("div", { class: "dock-actions" }, h("span", { class: "hint" }, exact ? `Pick ${exact}` : "Tap any that apply"), btn));
   });
@@ -344,18 +378,10 @@ export function askNumber({ prefix = "", suffix = "", placeholder = "", min = 0,
     const input = h("input", { type: "number", min, max, step: "any", placeholder, inputmode: "decimal" });
     const send = h("button", { class: "send", type: "button", disabled: true }, "Send");
     const finish = (v) => { clearDock(); user(`${prefix}${v}${suffix}`); res(v); };
-    const bar = voiceBar({
-      hint: "Just say the number, like “thirty-five”.", silenceMs: 1300,
-      onHeard: (txt, b) => {
-        const v = parseNumber(txt);
-        if (v == null || v < min || v > max) return b.retry(`I heard “${txt}”. Could you say a number between ${min} and ${max}?`);
-        input.value = v; send.disabled = false;
-        b.confirmIn(1800, `${prefix}${v}${suffix}?`, () => finish(v));
-      },
-    });
-    input.addEventListener("input", () => { bar.cancelConfirm(); const v = parseFloat(input.value); send.disabled = isNaN(v) || v < min || v > max; });
+    input.addEventListener("input", () => { const v = parseFloat(input.value); send.disabled = isNaN(v) || v < min || v > max; });
+    input.addEventListener("keydown", (e) => { if (e.key === "Enter" && !send.disabled) finish(parseFloat(input.value)); });
     send.addEventListener("click", () => finish(parseFloat(input.value)));
-    dock(bar, h("div", { class: "num-row" }, prefix && h("span", { class: "affix" }, prefix), input, suffix && h("span", { class: "affix" }, suffix), send));
+    dock(null, h("div", { class: "num-row" }, prefix && h("span", { class: "affix" }, prefix), input, suffix && h("span", { class: "affix" }, suffix), send));
   });
 }
 
@@ -365,20 +391,10 @@ export function askSlider({ min = 0, max = 100, step = 1, init = 50, unit = "%" 
     const r = h("input", { type: "range", min, max, step, value: init });
     const send = h("button", { class: "send", type: "button", disabled: true }, "Confirm");
     const finish = () => { clearDock(); user(r.value + unit); res(Number(r.value)); };
-    const set = (v) => { r.value = v; out.textContent = r.value + unit; send.disabled = false; };
-    const bar = voiceBar({
-      hint: "Say a percentage like “seventy”, or “definitely” / “no way”.", silenceMs: 1300,
-      onHeard: (txt, b) => {
-        let v = parseNumber(txt);
-        if (v == null) v = /\b(definitely|absolutely|for sure|of course)\b/i.test(txt) ? 100 : /\b(no way|never|not at all|absolutely not)\b/i.test(txt) ? 0 : /\b(fifty[- ]fifty|maybe|toss ?up)\b/i.test(txt) ? 50 : null;
-        if (v == null || v < min || v > max) return b.retry(`I heard “${txt}”. How likely, from ${min} to ${max} percent?`);
-        set(Math.round(v / step) * step);
-        b.confirmIn(1800, `${r.value}${unit}?`, finish);
-      },
-    });
-    r.addEventListener("input", () => { bar.cancelConfirm(); set(r.value); });
+    // confirm unlocks on first interaction so the default value is never submitted unseen
+    r.addEventListener("input", () => { out.textContent = r.value + unit; send.disabled = false; });
     send.addEventListener("click", finish);
-    dock(bar, out, r, h("div", { class: "anchors" }, h("span", {}, min + unit), h("span", {}, max + unit)),
+    dock(null, out, r, h("div", { class: "anchors" }, h("span", {}, min + unit), h("span", {}, max + unit)),
       h("div", { class: "dock-actions", style: "justify-content:flex-end" }, send));
   });
 }

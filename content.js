@@ -1,6 +1,7 @@
 // Static interview content: scales, modules, shock library, templates.
-// The bot never free-generates questions: everything the participant sees comes from here,
-// with slot-filled values (names, amounts) only.
+// Scales, modules, shocks and framing are fixed templates with slot-filled values only.
+// One sanctioned exception: the Block D counterfactual probe question may be model-written
+// (see llm.js — constrained, validated, logged; COUNTERFACTUAL_TEMPLATE is the fallback).
 
 export const VERSION = "monthly-checkin-bot@0.1.0";
 
@@ -39,6 +40,27 @@ export function tagDomain(text) {
   }
   return best;
 }
+
+// ---------- event detection (rule-based fallback; see llm.js for the model harness) ----------
+// "Eventful" = something actually HAPPENED — any action, occurrence, or decision (a trip to the
+// farmer's market counts, not only life changes) — as opposed to a pure ongoing state, routine,
+// feeling, or opinion with no specific occurrence in it.
+export const EVENT_RX = /\b(start(ed|ing)?|began|new|quit|left|moved?|moving|got|lost|broke( up)?|finish(ed)?|ended|adopt(ed)?|bought|sold|signed|switch(ed)?|join(ed)?|promot(ed|ion)|fired|laid off|raise|engag(ed)?|married|divorc(ed)?|graduat(ed)?|injur(ed|y)|surgery|diagnos(ed|is)|crash(ed)?|cancell?ed|went|visit(ed)?|met|saw|play(ed)?|watch(ed)?|read|tried|cook(ed)?|made|built|ran|travell?(ed)?|trip|attend(ed)?|celebrat(ed)?|receiv(ed)?|sent|appli(ed)?|interview(ed)?|submitt(ed)?|present(ed)?|host(ed)?|升职|搬|分手|结婚|辞职|去了)\b/i;
+
+/** Short phrase naming the event: the first clause containing an event verb (else the first clause). */
+export function extractEventPhrase(text) {
+  const clauses = text
+    .split(/[.;!?\n。；！？]+|,\s*(?:and|but|also)\s+|\s+(?:and then|plus)\s+/i)
+    .map((s) => s.trim())
+    .filter((s) => s.length > 3);
+  const hit = clauses.find((c) => EVENT_RX.test(c)) || clauses[0] || text.trim();
+  return hit.length > 70 ? hit.slice(0, 67) + "…" : hit;
+}
+
+// Fallback counterfactual probe when no model is configured (or its question failed validation).
+// With the model harness enabled, the probe question itself is model-written — the one sanctioned
+// exception to the fixed-template rule (validated + logged as question_source in the record).
+export const COUNTERFACTUAL_TEMPLATE = (ev) => `Suppose “${ev}” had not happened. What would that part of your month have looked like instead?`;
 
 // ---------- Core scales (Block A). Fixed order, fixed wording. ----------
 const FREQ4 = ["Not at all", "Several days", "More than half the days", "Nearly every day"];
@@ -197,7 +219,7 @@ const ROTATING_DEFAULT = ["support", "finance_anx", "deadline"];
 
 export function pickModules(events, month) {
   const picked = [];
-  const ordered = [...events].sort((a, b) => Number(b.factual) - Number(a.factual));
+  const ordered = [...events].sort((a, b) => Number(b.eventful) - Number(a.eventful));
   for (const [id, rx] of MODULE_RULES) {
     if (picked.length >= 2) break;
     if (ordered.some((e) => rx.test(e.text))) picked.push({ id, why: ordered.find((e) => rx.test(e.text)).text });
@@ -240,26 +262,38 @@ export const CONTEXTUAL_TASK = { work: "timePref", money: "risk", health: "timeA
 // The persona's "thoughts" replace the open free-recall interview: one response is required
 // per bubble ("Others" is optional), retakes are allowed, and NO "nothing changed" shortcut
 // is offered — bare "nothing / same as always" answers are gently nudged, not accepted.
+// Each bubble carries a few-shot example (vague → specific) shown above the answer box,
+// teaching the level of concreteness we want (what + when/how long) without changing the prompt.
 export const BUBBLES = [
   { id: "relationships", icon: "💞", label: "Relationships", hint: "friends · family · romance",
-    prompt: "Let's start with the people in your life — friendships, family, romance. How was that part of your month?" },
+    prompt: "Let's start with the people in your life — friendships, family, romance. How was that part of your month?",
+    eg: { from: "I saw some friends", to: "I caught up with Alex over coffee on Sunday, and called my parents twice" } },
   { id: "job", icon: "💼", label: "Job / school", hint: "work · classes",
-    prompt: "How did work or school go this month? Tell me what it's been like." },
+    prompt: "How did work or school go this month? Tell me what it's been like.",
+    eg: { from: "I worked", to: "I worked on the quarterly launch for about three weeks, with two late nights" } },
   { id: "hobbies", icon: "🎮", label: "Hobbies", hint: "movies · shows · music · games · sports · books",
-    prompt: "What have you been into this month — movies, shows, music, games, sports, books, anything you do for fun?" },
+    prompt: "What have you been into this month — movies, shows, music, games, sports, books, anything you do for fun?",
+    eg: { from: "I watched stuff", to: "I finished season two of my show, played Zelda on weekends, and read half a novel" } },
   { id: "sleep", icon: "😴", label: "Sleep", hint: "nights · rest",
-    prompt: "How has your sleep been this month? What have nights looked like?" },
+    prompt: "How has your sleep been this month? What have nights looked like?",
+    eg: { from: "I slept okay", to: "about seven hours most nights, but I kept waking up at 3am the week of my deadline" } },
   { id: "mood", icon: "🌤️", label: "Mood", hint: "feelings · energy",
-    prompt: "How have you been feeling overall this month, in your own words?" },
+    prompt: "How have you been feeling overall this month, in your own words?",
+    eg: { from: "I felt fine", to: "steady most days, but anxious the week my lease was ending" } },
   { id: "finance", icon: "💰", label: "Finance", hint: "money · spending",
-    prompt: "How did things go money-wise this month? Anything on your mind there?" },
+    prompt: "How did things go money-wise this month? Anything on your mind there?",
+    eg: { from: "I spent a lot", to: "I spent about $400 extra on car repairs, and started saving $100 a month" } },
   { id: "others", icon: "💭", label: "Others", hint: "anything else", optional: true,
-    prompt: "Anything else on your mind this month that the other thoughts didn't cover?" },
+    prompt: "Anything else on your mind this month that the other thoughts didn't cover?",
+    eg: { from: "I went out", to: "I went to the farmer's market on Saturday morning" } },
 ];
 // topic → analysis domain ("others" falls back to keyword tagging)
 export const BUBBLE_DOMAIN = { relationships: "relationships", job: "work", hobbies: "other", sleep: "health", mood: "health", finance: "money" };
 export const RECAP_REJECT_RX = /^(nothing( much)?( changed| new)?|no|nope|nah|not much|same( as (usual|always|last month))?|no change(s)?|idk|i don'?t know|没什么|没有)[.!,\s]*$/i;
 export const RECAP_NUDGE = "Even an ordinary month counts — tell me a little about how it actually went.";
+// shown above every few-shot example so participants know the demo is the level to aim for —
+// phrased as Lumi's enthusiasm for detail, not an instruction
+export const RECAP_EG_NOTE = "Tell Lumi more! What you did, when, and for how long. Like this:";
 
 // ---------- Lumi Town (gamified framing layer) ----------
 // Research-integrity rules for everything town-related:

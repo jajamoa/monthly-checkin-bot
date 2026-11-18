@@ -4,9 +4,13 @@ A ~15 minute chat-style interview that tracks month-to-month changes in psycholo
 
 ## Input modes
 
-Open-ended questions are voice-first (Web Speech API: Chrome, Edge, Safari): the recap thought
-bubbles, the two open-ended probes (stored verbatim in `open_ended`), and the closing note,
-with typing as the fallback (mic blocked, unsupported browser, accessibility). Numbers and the
+The recap thought bubbles are **strictly voice** — no text box, no "type instead" fallback: a
+working microphone is required to answer them (a blocked mic shows instructions to enable it;
+for testing, `window.__say("…")` injects a spoken answer). The other open-ended questions — the
+two probes (stored verbatim in `open_ended`), the counterfactual probe, and the closing note —
+remain voice-first with a text box fallback. Everything structured — multiple-choice scales,
+yes/no items, pick-N lists, allocation sliders, the probability slider, and numeric entry — is
+**tap/type-only with no voice bar**. Numbers and the
 probability slider can also be spoken ("thirty-five"). Everything else — multiple-choice
 scales, yes/no items, "pick N" lists and the split/allocation tasks — is **tap-only**: no
 voice mapping, participants press the option they mean.
@@ -65,11 +69,11 @@ interview by tapping — headless check:
 
 | Block | What happens |
 |---|---|
-| Recap | **Thought bubbles**: the persona's thoughts pop up in parallel — Relationships (friends · family · romance), Job/school, Hobbies (movies · shows · music · games · sports · books, one answer covers all), Sleep, Mood, Finance, + optional Others. Tap a bubble → speak/type → keep or retake (retake count logged). All six required before continuing; **no "nothing changed" shortcut** — bare "nothing/same" answers are nudged and re-asked. Each kept thought is domain-tagged and marked *factual change* yes/no |
+| Recap | **Thought bubbles**: the persona's thoughts pop up in parallel — Relationships (friends · family · romance), Job/school, Hobbies (movies · shows · music · games · sports · books, one answer covers all), Sleep, Mood, Finance, + optional Others. Tap a bubble → speak/type (few-shot example shown) → keep or retake (retake count logged). All six required before continuing; **no "nothing changed" shortcut** — bare "nothing/same" answers are nudged and re-asked. The **event harness** (`llm.js`) then labels each thought as *eventful* (any action/occurrence, not only changes) vs a pure state, extracts a short event phrase, and — with a model configured — picks the most interesting events and writes their counterfactual questions; the participant gets one skippable tap-to-fix screen instead of per-event yes/no questions (corrections logged in `event_detection`) |
 | A · Core scales | PSS-4, PHQ-4, UCLA-3, Cantril ladder, CFPB FWB-5, time pressure (2), sleep + energy (2). Fixed order, one item per screen, rendered as buttons |
 | B · Adaptive | Event → module map (burnout+job sat, relationship CSI-4 + attachment, social support, physical function, financial anxiety, deadline stress). Max 2; rotating default if no events |
 | C · Choices | Time preference & risk (3-step bisection staircase), windfall split, time allocation, reservation wage, social approach. Dollar amounts = monthly income × fixed fraction × ±10% seeded jitter per participant-month |
-| D · What-ifs | Shocks from a fixed 9-item library, phase = `(month-1) % 3`, so each recurs every 3 months. No factual change → 3 shocks; factual change → 2 shocks + 2 contextual items (counterfactual judgment + counterfactual re-run of a C task, stored as `perceived_effect`) |
+| D · What-ifs | Shocks from a fixed 9-item library, phase = `(month-1) % 3`, so each recurs every 3 months. No eventful item → 3 shocks; eventful → 2 shocks + 2 contextual items: a **counterfactual probe** (model-written question about the most interesting event when the harness is enabled, `COUNTERFACTUAL_TEMPLATE` otherwise; open spoken answer) + counterfactual re-run of a C task, stored as `perceived_effect` |
 | Close | "Anything we missed?" + distress check (PHQ-4 ≥ 6 or a subscale ≥ 3, or crisis language) → support resources + escalation flag |
 
 Design rules honoured: questions come from fixed templates with slot-filled values only; block order is constant; `bot_version` is written into every record; random-incentive selection (10%) is recorded.
@@ -81,6 +85,22 @@ Completed check-ins are stored in `localStorage` per participant (`mci:history:<
 ## Before real use — read this
 
 - **Scale wording must be verified.** PSS-4, PHQ-4, UCLA-3, Cantril and the FWB items are written from memory of the published instruments. The adaptive modules (OLBI-short, CSI-4, MSPSS-short, PROMIS, financial anxiety, deadline stress), time-pressure and sleep/energy items are *approximations*. Replace `content.js` text with the licensed/verbatim versions before collecting data.
-- Event parsing and domain tagging are keyword rules (`content.js`). Swap in an LLM that only **selects a template and fills slots** if you want better recall handling.
+- **Event harness** (`llm.js`) ships with keyword rules (`EVENT_RX` in `content.js`) as the
+  zero-config default. To enable the model, set
+  `window.MCI_LLM = { key: "sk-ant-…", model: "claude-opus-4-8" }` (or the `mci:llm`
+  localStorage key). The model labels each thought as *eventful* (anything that actually
+  happened — a market trip counts, not only life changes) vs a pure state, extracts a ≤8-word
+  event phrase in the participant's words, picks a domain from a fixed enum, **and for the 1–2
+  most interesting events writes the Block D counterfactual question** ("If you hadn't …, what
+  would you have done instead?"). That generated question is the one sanctioned exception to the
+  fixed-template rule: it's constrained (single second-person question, ≤25 words, grounded only
+  in the participant's words, no advice), validated client-side (anything off-contract drops to
+  `COUNTERFACTUAL_TEMPLATE`), and `question_source: "model"|"template"` is logged with every
+  probe. Few-shot prompt + strict JSON schema (`output_config.format`); invalid/missing labels
+  fall back to rules per-item and any transport error falls back entirely, so the interview
+  never stalls on the model. `event_detection` in each record logs method, model, and how many
+  labels the participant corrected on the quick-check screen (a free harness-accuracy measure).
+  A browser-held API key is for piloting only — proxy the call through your study server before
+  real data collection.
 - Escalation is a flag in the record only; wire it to your study's real protocol. Not clinical advice.
 - Payouts, objective-data validation (steps, sleep, transactions) and a server are out of scope here.
